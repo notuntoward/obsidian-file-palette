@@ -30,7 +30,7 @@
 		"@types/node": "^20.10.0",
 		"@typescript-eslint/eslint-plugin": "^8.67.0",
 		"@typescript-eslint/parser": "^8.67.0",
-		"@vitest/coverage-v8": "^4.1.11",
+		"@vitest/coverage-v8": "^5.0.4",
 		"@vitest/ui": "^4.0.0",
 		"builtin-modules": "^4.0.0",
 		"esbuild": "^0.28.2",
