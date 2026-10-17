@@ -9,8 +9,9 @@ interface FileExplorerViewLike {
 	revealInFolder?: (file: TAbstractFile) => void;
 }
 
-type AppWithShowInFolder = App & {
+type AppWithExternalActions = App & {
 	showInFolder?: (path: string) => void | Promise<void>;
+	openWithDefaultApp?: (path: string) => void | Promise<void>;
 };
 
 class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
@@ -24,7 +25,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.updateCurrentPathDisplay();
 	};
 	private readonly onInputKeydown = (event: KeyboardEvent): void => {
-		if (event.key === ':' || event.key === '?') {
+		if (event.key === ':' || event.key === '?' || event.key === '*') {
 			event.preventDefault();
 			this.runSelectedOperator(event.key);
 			return;
@@ -113,6 +114,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			{ command: '~', purpose: 'Jump to vault root' },
 			{ command: ':', purpose: 'Show in Obsidian file navigator' },
 			{ command: '?', purpose: 'Show in System File Explorer' },
+			{ command: '*', purpose: 'Open with system default app' },
 		]);
 
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
@@ -130,7 +132,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.contentEl.empty();
 	}
 
-	private runSelectedOperator(operator: ':' | '?'): void {
+	private runSelectedOperator(operator: ':' | '?' | '*'): void {
 		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
 		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
 		if (!entry?.file) return;
@@ -149,7 +151,26 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
-		const app = this.app as AppWithShowInFolder;
+		const app = this.app as AppWithExternalActions;
+		if (operator === '*') {
+			if (!app.openWithDefaultApp) {
+				new Notice('Opening items with the system default app is not available on this device.');
+				return;
+			}
+
+			try {
+				void Promise.resolve(app.openWithDefaultApp.call(this.app, entry.file.path)).catch((error: unknown) => {
+					const reason = error instanceof Error ? error.message : String(error);
+					new Notice(`Could not open item with the system default app: ${reason}`);
+				});
+				this.close();
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not open item with the system default app: ${reason}`);
+			}
+			return;
+		}
+
 		if (!app.showInFolder) {
 			new Notice('Showing items in System File Explorer is not available on this device.');
 			return;

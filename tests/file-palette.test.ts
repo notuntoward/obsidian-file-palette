@@ -38,6 +38,7 @@ describe('file palette picker', () => {
 	let openedFiles: TFile[];
 	let revealedItems: TAbstractFile[];
 	let shownPaths: string[];
+	let openedDefaultAppPaths: string[];
 	let getFirstLinkpathDest: ReturnType<typeof vi.fn>;
 	let plugin: FilePalettePlugin & { commands: { id: string; callback: () => void }[] };
 
@@ -55,6 +56,7 @@ describe('file palette picker', () => {
 		openedFiles = [];
 		revealedItems = [];
 		shownPaths = [];
+		openedDefaultAppPaths = [];
 		const openFile = vi.fn((file: TFile) => {
 			openedFiles.push(file);
 		});
@@ -75,6 +77,9 @@ describe('file palette picker', () => {
 			},
 			showInFolder: (path: string) => {
 				shownPaths.push(path);
+			},
+			openWithDefaultApp: (path: string) => {
+				openedDefaultAppPaths.push(path);
 			},
 			workspace,
 			metadataCache: { getFirstLinkpathDest },
@@ -128,6 +133,7 @@ describe('file palette picker', () => {
 			{ command: '~', purpose: 'Jump to vault root' },
 			{ command: ':', purpose: 'Show in Obsidian file navigator' },
 			{ command: '?', purpose: 'Show in System File Explorer' },
+			{ command: '*', purpose: 'Open with system default app' },
 		]);
 	});
 
@@ -272,6 +278,47 @@ describe('file palette picker', () => {
 		expect(shownPaths).toEqual([nestedFolder.path]);
 	});
 
+	it('opens the highlighted file with the system default app using the asterisk operator', () => {
+		const modal = highlightEntry(rootFile, '~/Root');
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
+
+		expect(openedDefaultAppPaths).toEqual([rootFile.path]);
+		expect(modal.modalEl.querySelector('.file-palette-current-path')).toBeNull();
+	});
+
+	it('opens a highlighted folder with the system default app', () => {
+		const modal = highlightEntry(nestedFolder);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
+
+		expect(openedDefaultAppPaths).toEqual([nestedFolder.path]);
+	});
+
+	it('reports when opening with the system default app is unavailable', () => {
+		const modal = highlightEntry(rootFile, '~/Root');
+		(app as App & { openWithDefaultApp?: (path: string) => void | Promise<void> }).openWithDefaultApp = undefined;
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
+
+		expect(Notice.messages).toEqual(['Opening items with the system default app is not available on this device.']);
+		expect(modal.modalEl.querySelector('.file-palette-current-path')).not.toBeNull();
+	});
+
+	it('reports when opening with the system default app fails', async () => {
+		const modal = highlightEntry(rootFile, '~/Root');
+		(app as App & { openWithDefaultApp?: (path: string) => void | Promise<void> }).openWithDefaultApp = vi.fn(
+			() => Promise.reject(new Error('Permission denied')),
+		);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
+		await vi.waitFor(() => expect(Notice.messages).toEqual([
+			'Could not open item with the system default app: Permission denied',
+		]));
+
+		expect(modal.modalEl.querySelector('.file-palette-current-path')).toBeNull();
+	});
+
 	it('does not run an item operator when the parent suggestion is highlighted', () => {
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
@@ -289,5 +336,6 @@ describe('file palette picker', () => {
 
 		expect(revealedItems).toHaveLength(0);
 		expect(shownPaths).toHaveLength(0);
+		expect(openedDefaultAppPaths).toHaveLength(0);
 	});
 });

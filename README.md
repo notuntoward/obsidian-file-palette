@@ -48,11 +48,11 @@ the start of a query to switch to the vault root; the operator hint appears in
 the palette's instruction footer. Use Up/Down to highlight a suggestion and
 Enter to open a file or browse into a folder. To act on the highlighted file or
 folder, type `:` to reveal it in Obsidian's file navigator or `?` to show it in
-the system file explorer. The system file explorer action depends on platform
-support. These operator characters are reserved by Obsidian and cannot be part
-of vault filenames. The picker includes every file type; Markdown extensions
-are omitted from names, while other file extensions appear as right-aligned
-hints.
+the system file explorer. Type `*` to open it with the system default app. The
+system file explorer and default app actions depend on platform support. These
+operator characters cannot appear in filenames on Windows. The picker includes
+every file type; Markdown extensions are omitted from names, while other file
+extensions appear as right-aligned hints.
 
 ## Build and test
 
