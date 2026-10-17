@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FilePalettePlugin from '../src/main';
 import * as ObsidianMock from './__mocks__/obsidian';
-import { SuggestModal, TFile, TFolder } from './__mocks__/obsidian';
+import { Notice, SuggestModal, TAbstractFile, TFile, TFolder } from './__mocks__/obsidian';
 import type { App, Editor } from 'obsidian';
 
 function addFolder(parent: TFolder, name: string): TFolder {
@@ -26,41 +26,55 @@ function addFile(parent: TFolder, name: string): TFile {
 describe('file palette picker', () => {
 	let root: TFolder;
 	let currentFolder: TFolder;
+	let nestedFolder: TFolder;
 	let rootFile: TFile;
 	let app: App;
 	let workspace: {
 		getActiveFile: () => { parent: TFolder; path: string };
 		activeEditor?: { editor: Editor };
 		getLeaf: () => { openFile: ReturnType<typeof vi.fn> };
+		getLeavesOfType: () => { view: { revealInFolder: ReturnType<typeof vi.fn> } }[];
 	};
 	let openedFiles: TFile[];
+	let revealedItems: TAbstractFile[];
+	let shownPaths: string[];
 	let getFirstLinkpathDest: ReturnType<typeof vi.fn>;
 	let plugin: FilePalettePlugin & { commands: { id: string; callback: () => void }[] };
 
 	beforeEach(async () => {
 		vi.restoreAllMocks();
 		SuggestModal.instances.length = 0;
+		Notice.messages.length = 0;
 		root = new TFolder('', '');
 		currentFolder = addFolder(root, 'current');
 		rootFile = addFile(root, 'Root note.md');
-		const nestedFolder = addFolder(currentFolder, 'Nested');
+		nestedFolder = addFolder(currentFolder, 'Nested');
 		addFile(nestedFolder, 'Needle note.md');
 
 		const filesByPath = new Map([[rootFile.path, rootFile]]);
 		openedFiles = [];
+		revealedItems = [];
+		shownPaths = [];
 		const openFile = vi.fn((file: TFile) => {
 			openedFiles.push(file);
+		});
+		const revealInFolder = vi.fn((file: TAbstractFile) => {
+			revealedItems.push(file);
 		});
 		getFirstLinkpathDest = vi.fn((_linkpath: string, _sourcePath: string) => null as TFile | null);
 		workspace = {
 			getActiveFile: () => ({ parent: currentFolder, path: 'current/source.md' }),
 			activeEditor: undefined,
 			getLeaf: () => ({ openFile }),
+			getLeavesOfType: () => [{ view: { revealInFolder } }],
 		};
 		app = {
 			vault: {
 				getRoot: () => root,
 				getAbstractFileByPath: (path: string) => filesByPath.get(path) ?? null,
+			},
+			showInFolder: (path: string) => {
+				shownPaths.push(path);
 			},
 			workspace,
 			metadataCache: { getFirstLinkpathDest },
@@ -75,6 +89,21 @@ describe('file palette picker', () => {
 		const command = plugin.commands.find((item) => item.id === id);
 		if (!command) throw new Error(`Expected command "${id}" to be registered`);
 		command.callback();
+	}
+
+	function highlightEntry(file: TAbstractFile, query = ''): SuggestModal<any> {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the picker modal to open');
+
+		const entry = modal.getSuggestions(query).find((suggestion) => suggestion.file === file);
+		if (!entry) throw new Error(`Expected "${file.path}" to be suggested`);
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+		return modal;
 	}
 
 	function setEditor(line: string, cursor: number, selection = ''): void {
@@ -95,7 +124,11 @@ describe('file palette picker', () => {
 		const path = modal?.modalEl.querySelector('.file-palette-current-path');
 		expect(path?.textContent).toBe('Current folder: current');
 		expect(path?.nextElementSibling).toBe(modal?.inputEl.parentElement);
-		expect(modal?.instructions).toEqual([{ command: '~', purpose: 'Jump to vault root' }]);
+		expect(modal?.instructions).toEqual([
+			{ command: '~', purpose: 'Jump to vault root' },
+			{ command: ':', purpose: 'Show in Obsidian file navigator' },
+			{ command: '?', purpose: 'Show in System File Explorer' },
+		]);
 	});
 
 	it('uses the vault root for tilde queries and updates the displayed path', () => {
@@ -201,5 +234,60 @@ describe('file palette picker', () => {
 
 		expect(openedFiles).toEqual([rootFile]);
 		expect(SuggestModal.instances).toHaveLength(0);
+	});
+
+	it('reveals the highlighted file in the Obsidian file navigator with the colon operator', () => {
+		const modal = highlightEntry(rootFile, '~/Root');
+		const event = new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true });
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(revealedItems).toEqual([rootFile]);
+		expect(modal.modalEl.querySelector('.file-palette-current-path')).toBeNull();
+	});
+
+	it('reveals a highlighted folder in the Obsidian file navigator', () => {
+		const modal = highlightEntry(nestedFolder);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true }));
+
+		expect(revealedItems).toEqual([nestedFolder]);
+	});
+
+	it('shows the highlighted item in System File Explorer with the question-mark operator', () => {
+		const modal = highlightEntry(rootFile, '~/Root');
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));
+
+		expect(shownPaths).toEqual([rootFile.path]);
+		expect(modal.modalEl.querySelector('.file-palette-current-path')).toBeNull();
+	});
+
+	it('shows a highlighted folder in System File Explorer', () => {
+		highlightEntry(nestedFolder).inputEl.dispatchEvent(
+			new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }),
+		);
+
+		expect(shownPaths).toEqual([nestedFolder.path]);
+	});
+
+	it('does not run an item operator when the parent suggestion is highlighted', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the picker modal to open');
+		const parentEntry = modal.getSuggestions('').find((suggestion) => suggestion.isParent);
+		if (!parentEntry) throw new Error('Expected the parent-folder suggestion');
+		modal.resultContainerEl.empty();
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(parentEntry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true }));
+
+		expect(revealedItems).toHaveLength(0);
+		expect(shownPaths).toHaveLength(0);
 	});
 });

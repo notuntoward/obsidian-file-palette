@@ -45,10 +45,14 @@ browse into it, select `.. (parent folder)` or press Backspace on an empty
 search to go up, and enter slash-separated paths to navigate through folders.
 The current folder path stays displayed at the top of the palette. Type `~` at
 the start of a query to switch to the vault root; the operator hint appears in
-the palette's instruction footer. Use Up/Down and Enter to navigate suggestions
-or open a file. It includes every file type in the vault; Markdown file
-extensions are omitted from names, while other file extensions appear as
-right-aligned hints.
+the palette's instruction footer. Use Up/Down to highlight a suggestion and
+Enter to open a file or browse into a folder. To act on the highlighted file or
+folder, type `:` to reveal it in Obsidian's file navigator or `?` to show it in
+the system file explorer. The system file explorer action depends on platform
+support. These operator characters are reserved by Obsidian and cannot be part
+of vault filenames. The picker includes every file type; Markdown extensions
+are omitted from names, while other file extensions appear as right-aligned
+hints.
 
 ## Build and test
 

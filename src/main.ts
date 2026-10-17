@@ -1,12 +1,21 @@
-import { App, Editor, Plugin, prepareFuzzySearch, SuggestModal, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { App, Editor, Notice, Plugin, prepareFuzzySearch, SuggestModal, TAbstractFile, TFile, TFolder } from 'obsidian';
 
 interface VaultEntry {
 	file: TAbstractFile | null;
 	isParent: boolean;
 }
 
+interface FileExplorerViewLike {
+	revealInFolder?: (file: TAbstractFile) => void;
+}
+
+type AppWithShowInFolder = App & {
+	showInFolder?: (path: string) => void | Promise<void>;
+};
+
 class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private readonly parentEntry: VaultEntry = { file: null, isParent: true };
+	private readonly entryBySuggestion = new WeakMap<HTMLElement, VaultEntry>();
 	private pathEl: HTMLDivElement | null = null;
 	private readonly onInput = (): void => {
 		if (this.inputEl.value.startsWith('~')) {
@@ -15,6 +24,12 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.updateCurrentPathDisplay();
 	};
 	private readonly onInputKeydown = (event: KeyboardEvent): void => {
+		if (event.key === ':' || event.key === '?') {
+			event.preventDefault();
+			this.runSelectedOperator(event.key);
+			return;
+		}
+
 		if (event.key === 'Backspace' && this.inputEl.value === '' && this.currentFolder.parent) {
 			event.preventDefault();
 			this.navigateToFolder(this.currentFolder.parent);
@@ -50,6 +65,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	renderSuggestion(entry: VaultEntry, element: HTMLElement): void {
+		this.entryBySuggestion.set(element, entry);
 		element.addClass('file-palette-suggestion');
 		if (entry.isParent) {
 			element.setText('.. (parent folder)');
@@ -93,7 +109,11 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.pathEl = this.inputEl.parentElement?.createDiv({ cls: 'file-palette-current-path' }) ?? null;
 		if (this.pathEl) this.inputEl.parentElement?.before(this.pathEl);
 		this.updateCurrentPathDisplay();
-		this.setInstructions([{ command: '~', purpose: 'Jump to vault root' }]);
+		this.setInstructions([
+			{ command: '~', purpose: 'Jump to vault root' },
+			{ command: ':', purpose: 'Show in Obsidian file navigator' },
+			{ command: '?', purpose: 'Show in System File Explorer' },
+		]);
 
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
 		this.inputEl.addEventListener('input', this.onInput);
@@ -108,6 +128,43 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.pathEl?.remove();
 		this.pathEl = null;
 		this.contentEl.empty();
+	}
+
+	private runSelectedOperator(operator: ':' | '?'): void {
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		if (!entry?.file) return;
+
+		if (operator === ':') {
+			const fileExplorerView = this.app.workspace.getLeavesOfType('file-explorer')[0]?.view as
+				| FileExplorerViewLike
+				| undefined;
+			if (!fileExplorerView?.revealInFolder) {
+				new Notice('The Obsidian file navigator is not available.');
+				return;
+			}
+
+			fileExplorerView.revealInFolder(entry.file);
+			this.close();
+			return;
+		}
+
+		const app = this.app as AppWithShowInFolder;
+		if (!app.showInFolder) {
+			new Notice('Showing items in System File Explorer is not available on this device.');
+			return;
+		}
+
+		try {
+			void Promise.resolve(app.showInFolder.call(this.app, entry.file.path)).catch((error: unknown) => {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not show item in System File Explorer: ${reason}`);
+			});
+			this.close();
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not show item in System File Explorer: ${reason}`);
+		}
 	}
 
 	private updateCurrentPathDisplay(): void {

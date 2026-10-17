@@ -66,7 +66,11 @@ export class Setting {
 }
 
 export class Notice {
-	constructor(_message: string, _timeout?: number) {}
+	static messages: string[] = [];
+
+	constructor(message: string, _timeout?: number) {
+		Notice.messages.push(message);
+	}
 	setMessage(_message: string): this {
 		return this;
 	}
@@ -102,14 +106,18 @@ export class SuggestModal<T> extends Modal {
 	static instances: SuggestModal<any>[] = [];
 
 	inputEl: HTMLInputElement;
+	resultContainerEl: HTMLDivElement;
 	instructions: { command: string; purpose: string }[] = [];
 	placeholder = '';
 
 	constructor(app: any) {
 		super(app);
 		this.inputEl = document.createElement('input');
+		this.resultContainerEl = document.createElement('div');
+		this.resultContainerEl.className = 'suggestion-container';
 		const inputContainer = document.createElement('div');
 		inputContainer.append(this.inputEl);
+		this.contentEl.appendChild(this.resultContainerEl);
 		this.modalEl.insertBefore(inputContainer, this.contentEl);
 		SuggestModal.instances.push(this as SuggestModal<unknown>);
 	}
