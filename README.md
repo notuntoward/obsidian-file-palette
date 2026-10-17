@@ -54,6 +54,13 @@ operator characters cannot appear in filenames on Windows. The picker includes
 every file type; Markdown extensions are omitted from names, while other file
 extensions appear as right-aligned hints.
 
+For a highlighted file, use the Obsidian tab shortcuts: `Ctrl+Shift+Enter` on
+Windows/Linux or `Cmd+Shift+Enter` on macOS to open in a new tab;
+`Ctrl+Alt+Enter` or `Cmd+Option+Enter` to open in a new tab group; and add
+`Shift` to that last shortcut to open in a new window (desktop only). These
+modifier shortcuts do not change folder selection: folders continue to open in
+the picker.
+
 ## Build and test
 
 ```bash

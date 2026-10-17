@@ -77,6 +77,8 @@ export class Notice {
 	hide(): void {}
 }
 
+export const Platform = { isMobile: false };
+
 export class Modal {
 	app: any;
 	modalEl: HTMLElement;

@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import FilePalettePlugin from '../src/main';
 import * as ObsidianMock from './__mocks__/obsidian';
-import { Notice, SuggestModal, TAbstractFile, TFile, TFolder } from './__mocks__/obsidian';
+import { Notice, Platform, SuggestModal, TAbstractFile, TFile, TFolder } from './__mocks__/obsidian';
 import type { App, Editor } from 'obsidian';
 
 function addFolder(parent: TFolder, name: string): TFolder {
@@ -32,7 +32,7 @@ describe('file palette picker', () => {
 	let workspace: {
 		getActiveFile: () => { parent: TFolder; path: string };
 		activeEditor?: { editor: Editor };
-		getLeaf: () => { openFile: ReturnType<typeof vi.fn> };
+		getLeaf: (newLeaf?: 'tab' | 'split' | 'window' | boolean) => { openFile: ReturnType<typeof vi.fn> };
 		getLeavesOfType: () => { view: { revealInFolder: ReturnType<typeof vi.fn> } }[];
 	};
 	let openedFiles: TFile[];
@@ -46,6 +46,7 @@ describe('file palette picker', () => {
 		vi.restoreAllMocks();
 		SuggestModal.instances.length = 0;
 		Notice.messages.length = 0;
+		Platform.isMobile = false;
 		root = new TFolder('', '');
 		currentFolder = addFolder(root, 'current');
 		rootFile = addFile(root, 'Root note.md');
@@ -59,7 +60,9 @@ describe('file palette picker', () => {
 		openedDefaultAppPaths = [];
 		const openFile = vi.fn((file: TFile) => {
 			openedFiles.push(file);
+			return Promise.resolve();
 		});
+		const getLeaf = vi.fn((_newLeaf?: 'tab' | 'split' | 'window' | boolean) => ({ openFile }));
 		const revealInFolder = vi.fn((file: TAbstractFile) => {
 			revealedItems.push(file);
 		});
@@ -67,7 +70,7 @@ describe('file palette picker', () => {
 		workspace = {
 			getActiveFile: () => ({ parent: currentFolder, path: 'current/source.md' }),
 			activeEditor: undefined,
-			getLeaf: () => ({ openFile }),
+			getLeaf,
 			getLeavesOfType: () => [{ view: { revealInFolder } }],
 		};
 		app = {
@@ -134,6 +137,9 @@ describe('file palette picker', () => {
 			{ command: ':', purpose: 'Show in Obsidian file navigator' },
 			{ command: '?', purpose: 'Show in System File Explorer' },
 			{ command: '*', purpose: 'Open with system default app' },
+			{ command: 'Mod+Shift+Enter', purpose: 'Open in new tab' },
+			{ command: 'Mod+Alt+Enter', purpose: 'Open in new tab group' },
+			{ command: 'Mod+Alt+Shift+Enter', purpose: 'Open in new window' },
 		]);
 	});
 
@@ -231,6 +237,61 @@ describe('file palette picker', () => {
 
 		expect(SuggestModal.instances.at(-1)?.inputEl.value).toBe('Needle');
 		expect(openedFiles).toHaveLength(0);
+	});
+
+	it.each([
+		{ label: 'Ctrl+Shift+Enter', options: { ctrlKey: true, shiftKey: true }, destination: 'tab' },
+		{ label: 'Meta+Shift+Enter', options: { metaKey: true, shiftKey: true }, destination: 'tab' },
+		{ label: 'Ctrl+Alt+Enter', options: { ctrlKey: true, altKey: true }, destination: 'split' },
+		{ label: 'Meta+Alt+Enter', options: { metaKey: true, altKey: true }, destination: 'split' },
+		{ label: 'Ctrl+Alt+Shift+Enter', options: { ctrlKey: true, altKey: true, shiftKey: true }, destination: 'window' },
+		{ label: 'Meta+Alt+Shift+Enter', options: { metaKey: true, altKey: true, shiftKey: true }, destination: 'window' },
+	] as const)('opens the highlighted file in a $destination with $label', ({ options, destination }) => {
+		const modal = highlightEntry(rootFile, '~/Root');
+		const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(workspace.getLeaf).toHaveBeenCalledWith(destination);
+		expect(openedFiles).toEqual([rootFile]);
+		expect(modal.modalEl.querySelector('.file-palette-current-path')).toBeNull();
+	});
+
+	it('leaves modified Enter on a highlighted folder to the modal folder-navigation behavior', () => {
+		const modal = highlightEntry(nestedFolder);
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(false);
+		expect(workspace.getLeaf).not.toHaveBeenCalled();
+	});
+
+	it('hides the new-window shortcut and reports it unavailable on mobile', () => {
+		Platform.isMobile = true;
+		const modal = highlightEntry(rootFile, '~/Root');
+
+		expect(modal.instructions.some(({ purpose }) => purpose === 'Open in new window')).toBe(false);
+		modal.inputEl.dispatchEvent(
+			new KeyboardEvent('keydown', {
+				key: 'Enter',
+				ctrlKey: true,
+				altKey: true,
+				shiftKey: true,
+				bubbles: true,
+				cancelable: true,
+			}),
+		);
+
+		expect(Notice.messages).toEqual(['Opening a file in a new window is not available on mobile.']);
+		expect(workspace.getLeaf).not.toHaveBeenCalled();
 	});
 
 	it('normalizes a selected wiki link before resolving it', () => {

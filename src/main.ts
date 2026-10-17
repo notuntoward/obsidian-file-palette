@@ -1,4 +1,4 @@
-import { App, Editor, Notice, Plugin, prepareFuzzySearch, SuggestModal, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { App, Editor, Notice, Platform, Plugin, prepareFuzzySearch, SuggestModal, TAbstractFile, TFile, TFolder } from 'obsidian';
 
 interface VaultEntry {
 	file: TAbstractFile | null;
@@ -25,6 +25,19 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.updateCurrentPathDisplay();
 	};
 	private readonly onInputKeydown = (event: KeyboardEvent): void => {
+		if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && (event.shiftKey || event.altKey)) {
+			const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+			const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+			if (entry?.file instanceof TFile) {
+				const destination = event.shiftKey && event.altKey
+					? 'window'
+					: event.shiftKey ? 'tab' : 'split';
+				event.preventDefault();
+				this.openInDestination(entry.file, destination);
+				return;
+			}
+		}
+
 		if (event.key === ':' || event.key === '?' || event.key === '*') {
 			event.preventDefault();
 			this.runSelectedOperator(event.key);
@@ -115,6 +128,11 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			{ command: ':', purpose: 'Show in Obsidian file navigator' },
 			{ command: '?', purpose: 'Show in System File Explorer' },
 			{ command: '*', purpose: 'Open with system default app' },
+			{ command: 'Mod+Shift+Enter', purpose: 'Open in new tab' },
+			{ command: 'Mod+Alt+Enter', purpose: 'Open in new tab group' },
+			...(!Platform.isMobile
+				? [{ command: 'Mod+Alt+Shift+Enter', purpose: 'Open in new window' }]
+				: []),
 		]);
 
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
@@ -130,6 +148,24 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.pathEl?.remove();
 		this.pathEl = null;
 		this.contentEl.empty();
+	}
+
+	private openInDestination(file: TFile, destination: 'tab' | 'split' | 'window'): void {
+		if (destination === 'window' && Platform.isMobile) {
+			new Notice('Opening a file in a new window is not available on mobile.');
+			return;
+		}
+
+		try {
+			void this.app.workspace.getLeaf(destination).openFile(file).catch((error: unknown) => {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not open file in a ${destination}: ${reason}`);
+			});
+			this.close();
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not open file in a ${destination}: ${reason}`);
+		}
 	}
 
 	private runSelectedOperator(operator: ':' | '?' | '*'): void {
