@@ -3,13 +3,14 @@
 A fast file and folder picker for Obsidian.
 
 This plugin provides a lightweight palette-style UI for jumping to files,
-opening folders, and working with recent or frequently used vault items from a
-single searchable command.
+and browsing folders through two searchable commands.
 
 ## Features
 
 - Search files and folders by name
 - Open entries directly from a palette-like modal
+- Navigate folders and slash-separated paths
+- Jump to a file inferred from the current editor selection or cursor
 - Keep the interaction lightweight and keyboard-friendly
 - Built on the Obsidian plugin template with linting, type-checking, and tests
 
