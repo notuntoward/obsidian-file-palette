@@ -20,6 +20,13 @@ Do not declare a task done without grepping the built artifact for evidence.
 - Browser tests: `npm run test:browser` (Playwright, requires
   `npx playwright install chromium`).
 
+## File palette regression tests
+
+- Run `npm run test:run` after changing picker behavior or styling.
+- Keep coverage for the persistent path above the search input, the `~` vault
+  root operator, relative slash-separated paths, and compact suggestion rows.
+- Update the related assertions when intentionally changing those interactions.
+
 ## When building an Obsidian plugin inside a git worktree
 
 If the vault loads this plugin via a junction to the main checkout, a build

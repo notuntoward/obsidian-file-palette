@@ -1,0 +1,30 @@
+.file-palette-current-path {
+	padding: var(--size-4-3);
+	border-inline-start: 2px solid var(--interactive-accent);
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-medium);
+}
+
+.file-palette-suggestion {
+	display: flex;
+	align-items: center;
+	gap: var(--size-4-2);
+	padding-block: var(--size-4-1);
+}
+
+.file-palette-suggestion-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.file-palette-suggestion-extension {
+	flex-shrink: 0;
+	margin-inline-start: auto;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}

@@ -5,6 +5,7 @@
 export class Plugin {
 	app: any;
 	manifest: any;
+	commands: any[] = [];
 
 	constructor(app: any, manifest: any) {
 		this.app = app;
@@ -13,7 +14,10 @@ export class Plugin {
 
 	async onload(): Promise<void> {}
 	onunload(): void {}
-	addCommand(_command: any): any {}
+	addCommand(command: any): any {
+		this.commands.push(command);
+		return command;
+	}
 	addSettingTab(_tab: any): void {}
 	registerEvent(_event: any): void {}
 	registerDomEvent(_el: any, _type: string, _callback: any): void {}
@@ -71,16 +75,132 @@ export class Notice {
 
 export class Modal {
 	app: any;
+	modalEl: HTMLElement;
 	contentEl: any;
+	titleEl: HTMLElement;
 
 	constructor(app: any) {
 		this.app = app;
+		installDomHelpers();
+		this.modalEl = document.createElement('div');
+		this.contentEl = document.createElement('div');
+		this.titleEl = document.createElement('div');
+		this.modalEl.append(this.titleEl, this.contentEl);
 	}
 
-	open(): void {}
-	close(): void {}
+	open(): void {
+		this.onOpen();
+	}
+	close(): void {
+		this.onClose();
+	}
 	onOpen(): void {}
 	onClose(): void {}
+}
+
+export class SuggestModal<T> extends Modal {
+	static instances: SuggestModal<any>[] = [];
+
+	inputEl: HTMLInputElement;
+	instructions: { command: string; purpose: string }[] = [];
+	placeholder = '';
+
+	constructor(app: any) {
+		super(app);
+		this.inputEl = document.createElement('input');
+		const inputContainer = document.createElement('div');
+		inputContainer.append(this.inputEl);
+		this.modalEl.insertBefore(inputContainer, this.contentEl);
+		SuggestModal.instances.push(this as SuggestModal<unknown>);
+	}
+
+	setPlaceholder(placeholder: string): void {
+		this.placeholder = placeholder;
+	}
+
+	setTitle(title: string): void {
+		this.titleEl.textContent = title;
+	}
+
+	setInstructions(instructions: { command: string; purpose: string }[]): void {
+		this.instructions = instructions;
+	}
+
+	getSuggestions(_query: string): T[] {
+		return [];
+	}
+
+	renderSuggestion(_value: T, _element: HTMLElement): void {}
+}
+
+export class TAbstractFile {
+	constructor(
+		public name: string,
+		public path: string,
+	) {}
+}
+
+export class TFolder extends TAbstractFile {
+	children: TAbstractFile[] = [];
+	parent: TFolder | null = null;
+}
+
+export class TFile extends TAbstractFile {
+	basename: string;
+	extension: string;
+
+	constructor(name: string, path: string) {
+		super(name, path);
+		const extensionIndex = name.lastIndexOf('.');
+		this.basename = extensionIndex < 0 ? name : name.slice(0, extensionIndex);
+		this.extension = extensionIndex < 0 ? '' : name.slice(extensionIndex + 1);
+	}
+}
+
+export function prepareFuzzySearch(query: string): (text: string) => { score: number } | null {
+	const normalizedQuery = query.toLowerCase();
+	return (text) => {
+		const index = text.toLowerCase().indexOf(normalizedQuery);
+		return index < 0 ? null : { score: -index };
+	};
+}
+
+function installDomHelpers(): void {
+	if ('createDiv' in HTMLElement.prototype) return;
+
+	Object.defineProperties(HTMLElement.prototype, {
+		createDiv: {
+			value(this: HTMLElement, options?: { cls?: string }): HTMLDivElement {
+				const element = document.createElement('div');
+				if (options?.cls) element.className = options.cls;
+				this.appendChild(element);
+				return element;
+			},
+		},
+		createSpan: {
+			value(this: HTMLElement, options?: { cls?: string }): HTMLSpanElement {
+				const element = document.createElement('span');
+				if (options?.cls) element.className = options.cls;
+				this.appendChild(element);
+				return element;
+			},
+		},
+		setText: {
+			value(this: HTMLElement, text: string): void {
+				this.textContent = text;
+			},
+		},
+		addClass: {
+			value(this: HTMLElement, ...classes: string[]): void {
+				this.classList.add(...classes);
+			},
+		},
+		empty: {
+			value(this: HTMLElement): void {
+				this.replaceChildren();
+			},
+		},
+	});
 }
 
 export class Component {
