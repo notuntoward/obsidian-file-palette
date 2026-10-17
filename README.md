@@ -1,5 +1,10 @@
 # File Palette
 
+[![Build](https://github.com/notuntoward/obsidian-file-palette/actions/workflows/build.yml/badge.svg)](https://github.com/notuntoward/obsidian-file-palette/actions/workflows/build.yml)
+[![CodeQL](https://github.com/notuntoward/obsidian-file-palette/actions/workflows/codeql.yml/badge.svg)](https://github.com/notuntoward/obsidian-file-palette/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://github.com/notuntoward/obsidian-file-palette/actions/workflows/scorecard.yml/badge.svg)](https://github.com/notuntoward/obsidian-file-palette/actions/workflows/scorecard.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/notuntoward/obsidian-file-palette/badge)](https://securityscorecards.dev/viewer/?uri=github.com/notuntoward/obsidian-file-palette)
+
 A fast file and folder picker for Obsidian.
 
 This plugin provides a lightweight palette-style UI for jumping to files,

@@ -126,29 +126,28 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private getQueryFolder(query: string): { folder: TFolder; name: string } | null {
 		const absoluteRoot = query.startsWith('~');
 		const normalizedQuery = absoluteRoot ? query.slice(1) : query;
+		const folder = absoluteRoot || normalizedQuery.startsWith('/') ? this.app.vault.getRoot() : this.currentFolder;
 		const lastSeparator = normalizedQuery.lastIndexOf('/');
-		if (lastSeparator < 0) {
-			return { folder: absoluteRoot || normalizedQuery.startsWith('/') ? this.app.vault.getRoot() : this.currentFolder, name: normalizedQuery };
-		}
+		if (lastSeparator < 0) return { folder, name: normalizedQuery };
 
 		const path = normalizedQuery.slice(0, lastSeparator);
 		const name = normalizedQuery.slice(lastSeparator + 1);
-		let folder = absoluteRoot || normalizedQuery.startsWith('/') ? this.app.vault.getRoot() : this.currentFolder;
+		let targetFolder = folder;
 		const relativePath = normalizedQuery.startsWith('/') ? path.slice(1) : path;
 
 		for (const segment of relativePath.split('/').filter(Boolean)) {
 			if (segment === '.') continue;
 			if (segment === '..') {
-				if (folder.parent) folder = folder.parent;
+				if (targetFolder.parent) targetFolder = targetFolder.parent;
 				continue;
 			}
 
-			const child = folder.children.find((file) => file.name === segment);
+			const child = targetFolder.children.find((file) => file.name === segment);
 			if (!(child instanceof TFolder)) return null;
-			folder = child;
+			targetFolder = child;
 		}
 
-		return { folder, name };
+		return { folder: targetFolder, name };
 	}
 }
 
@@ -159,8 +158,7 @@ export default class FilePalettePlugin extends Plugin {
 			// eslint-disable-next-line obsidianmd/commands/no-plugin-name-in-command-name -- Keep the explicit label requested for discoverability.
 			name: 'Open file palette',
 			callback: () => {
-				const folder = this.app.workspace.getActiveFile()?.parent ?? this.app.vault.getRoot();
-				new VaultPathSuggestModal(this.app, folder).open();
+				new VaultPathSuggestModal(this.app, this.getActiveFolder()).open();
 			},
 		});
 		this.addCommand({
@@ -176,10 +174,13 @@ export default class FilePalettePlugin extends Plugin {
 					return;
 				}
 
-				const folder = this.app.workspace.getActiveFile()?.parent ?? this.app.vault.getRoot();
-				new VaultPathSuggestModal(this.app, folder, guess).open();
+				new VaultPathSuggestModal(this.app, this.getActiveFolder(), guess).open();
 			},
 		});
+	}
+
+	private getActiveFolder(): TFolder {
+		return this.app.workspace.getActiveFile()?.parent ?? this.app.vault.getRoot();
 	}
 
 	private getEditorGuess(editor: Editor | undefined): string {
