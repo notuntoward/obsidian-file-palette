@@ -21,6 +21,9 @@
 	],
 	"author": "Scott Otterson",
 	"license": "MIT",
+	"overrides": {
+		"moment": "2.31.0"
+	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
 		"@playwright/test": "^1.62.1",
