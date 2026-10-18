@@ -71,4 +71,14 @@ else
 fi
 
 echo
-echo "Verify at: https://github.com/${OWNER}/${REPO}/settings/branch_protection_rules"
+echo "Enabling auto-merge on ${OWNER}/${REPO} ..."
+gh repo edit "${OWNER}/${REPO}" --enable-auto-merge
+
+echo
+echo "Allowing GitHub Actions to approve pull requests on ${OWNER}/${REPO} ..."
+gh api --method PUT "repos/${OWNER}/${REPO}/actions/permissions/workflow" -F can_approve_pull_request_reviews=true
+
+echo
+echo "Repository configuration complete."
+echo "Verify at: https://github.com/${OWNER}/${REPO}/settings"
+

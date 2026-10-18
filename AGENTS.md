@@ -27,6 +27,16 @@ Do not declare a task done without grepping the built artifact for evidence.
   root operator, relative slash-separated paths, and compact suggestion rows.
 - Update the related assertions when intentionally changing those interactions.
 
+## Repository setup for new plugins seeded from this template
+
+When setting up or configuring a newly created plugin repository:
+1. Verify GitHub CLI authentication (`gh auth status`).
+2. Run `.github/enable-branch-protection.ps1` (PowerShell) or `.github/enable-branch-protection.sh` (bash).
+   This script:
+   - Configures branch protection on `main` (requires 'ESLint and build', 1 approval, blocks force-pushes).
+   - Enables native repository auto-merge (`allow_auto_merge`).
+   - Grants GitHub Actions permission to approve PRs (`can_approve_pull_request_reviews: true`) so Dependabot patch and minor updates auto-merge.
+
 ## When building an Obsidian plugin inside a git worktree
 
 If the vault loads this plugin via a junction to the main checkout, a build

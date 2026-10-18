@@ -71,4 +71,14 @@ try {
 }
 
 Write-Host
-Write-Host "Verify at: https://github.com/$OWNER/$REPO/settings/branch_protection_rules"
+Write-Host "Enabling auto-merge on $OWNER/$REPO ..."
+gh repo edit "$OWNER/$REPO" --enable-auto-merge
+
+Write-Host
+Write-Host "Allowing GitHub Actions to approve pull requests on $OWNER/$REPO ..."
+gh api --method PUT "repos/$OWNER/$REPO/actions/permissions/workflow" -F can_approve_pull_request_reviews=true
+
+Write-Host
+Write-Host "Repository configuration complete."
+Write-Host "Verify at: https://github.com/$OWNER/$REPO/settings"
+
