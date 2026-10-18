@@ -22,7 +22,7 @@ $ErrorActionPreference = "Stop"
 
 $OWNER  = "notuntoward"
 $REPO   = "obsidian-file-palette"
-$BRANCH = "master"
+$BRANCH = "main"
 
 # GitHub REST API endpoint for branch protection (legacy)
 # https://docs.github.com/rest/branches/branch-protection
