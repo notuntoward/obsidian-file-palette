@@ -36,9 +36,7 @@ The picker fuzzy-matches items in the active folder:
 - **Search properties**: Comma-separated frontmatter properties to search alongside file names (defaults to `title`). Offers autocomplete suggestions for string-valued properties found in your vault. Only string-valued properties are searched.
 - **Show matching properties**: Toggle displaying configured frontmatter property values underneath each matching file name in the suggestion list (defaults to disabled). When enabled, matched text across all search terms is highlighted.
 
-## Shortcuts
-
-**Picker shortcuts**
+## Keys
 
 | Key | Action |
 | --- | --- |
