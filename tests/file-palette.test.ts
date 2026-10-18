@@ -15,7 +15,7 @@ import {
 	TFile,
 	TFolder,
 } from './__mocks__/obsidian';
-import type { App, Editor } from 'obsidian';
+import type { App } from 'obsidian';
 
 function addFolder(parent: TFolder, name: string): TFolder {
 	const path = parent.path ? `${parent.path}/${name}` : name;
@@ -40,7 +40,6 @@ describe('file palette picker', () => {
 	let app: App;
 	let workspace: {
 		getActiveFile: () => { parent: TFolder; path: string };
-		activeEditor?: { editor: Editor };
 		getLeaf: (newLeaf?: 'tab' | 'split' | 'window' | boolean) => { openFile: ReturnType<typeof vi.fn> };
 		getLeavesOfType: () => { view: { revealInFolder: ReturnType<typeof vi.fn> } }[];
 	};
@@ -48,7 +47,6 @@ describe('file palette picker', () => {
 	let revealedItems: TAbstractFile[];
 	let shownPaths: string[];
 	let openedDefaultAppPaths: string[];
-	let getFirstLinkpathDest: ReturnType<typeof vi.fn>;
 	let generateMarkdownLink: ReturnType<typeof vi.fn>;
 	let metadataByFile: Map<TFile, { frontmatter: Record<string, unknown> }>;
 	let plugin: FilePalettePlugin & {
@@ -75,7 +73,6 @@ describe('file palette picker', () => {
 		nestedFolder = addFolder(currentFolder, 'Nested');
 		addFile(nestedFolder, 'Needle note.md');
 
-		const filesByPath = new Map([[rootFile.path, rootFile]]);
 		openedFiles = [];
 		revealedItems = [];
 		shownPaths = [];
@@ -88,19 +85,16 @@ describe('file palette picker', () => {
 		const revealInFolder = vi.fn((file: TAbstractFile) => {
 			revealedItems.push(file);
 		});
-		getFirstLinkpathDest = vi.fn((_linkpath: string, _sourcePath: string) => null as TFile | null);
 		generateMarkdownLink = vi.fn((file: TFile, _sourcePath: string) => `[[${file.basename}]]`);
 		metadataByFile = new Map();
 		workspace = {
 			getActiveFile: () => ({ parent: currentFolder, path: 'current/source.md' }),
-			activeEditor: undefined,
 			getLeaf,
 			getLeavesOfType: () => [{ view: { revealInFolder } }],
 		};
 		app = {
 			vault: {
 				getRoot: () => root,
-				getAbstractFileByPath: (path: string) => filesByPath.get(path) ?? null,
 				getMarkdownFiles: () => [...metadataByFile.keys()],
 			},
 			showInFolder: (path: string) => {
@@ -111,7 +105,6 @@ describe('file palette picker', () => {
 			},
 			workspace,
 			metadataCache: {
-				getFirstLinkpathDest,
 				getFileCache: (file: TFile) => metadataByFile.get(file) ?? null,
 			},
 			fileManager: { generateMarkdownLink },
@@ -143,16 +136,6 @@ describe('file palette picker', () => {
 		modal.renderSuggestion(entry, element);
 		modal.resultContainerEl.appendChild(element);
 		return modal;
-	}
-
-	function setEditor(line: string, cursor: number, selection = ''): void {
-		workspace.activeEditor = {
-			editor: {
-				getSelection: () => selection,
-				getCursor: () => ({ line: 0, ch: cursor }),
-				getLine: () => line,
-			} as unknown as Editor,
-		};
 	}
 
 	it('shows the command header, path, and concise footer hints', () => {
@@ -536,37 +519,6 @@ describe('file palette picker', () => {
 		expect(path?.isConnected).toBe(false);
 	});
 
-	it('opens a directly resolved file from selected text without opening the picker', () => {
-		setEditor('', 0, rootFile.path);
-
-		runCommand('find-file-guessing');
-
-		expect(openedFiles).toEqual([rootFile]);
-		expect(getFirstLinkpathDest).not.toHaveBeenCalled();
-		expect(SuggestModal.instances).toHaveLength(0);
-	});
-
-	it('resolves a wiki link at the cursor through Obsidian metadata cache', () => {
-		const line = 'See [[Root note|display text]] here';
-		setEditor(line, line.indexOf('Root note') + 2);
-		getFirstLinkpathDest.mockReturnValue(rootFile);
-
-		runCommand('find-file-guessing');
-
-		expect(getFirstLinkpathDest).toHaveBeenCalledWith('Root note', 'current/source.md');
-		expect(openedFiles).toEqual([rootFile]);
-		expect(SuggestModal.instances).toHaveLength(0);
-	});
-
-	it('opens the picker with the cursor token when no file resolves', () => {
-		const line = 'Find Needle near here';
-		setEditor(line, line.indexOf('Needle') + 3);
-
-		runCommand('find-file-guessing');
-
-		expect(SuggestModal.instances.at(-1)?.inputEl.value).toBe('Needle');
-		expect(openedFiles).toHaveLength(0);
-	});
 
 	it('copies the highlighted file link in the vault-configured format with Ctrl+Shift+L', async () => {
 		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
@@ -728,14 +680,6 @@ describe('file palette picker', () => {
 		expect(workspace.getLeaf).not.toHaveBeenCalled();
 	});
 
-	it('normalizes a selected wiki link before resolving it', () => {
-		setEditor('', 0, ' [[Root note.md|display text]] ');
-
-		runCommand('find-file-guessing');
-
-		expect(openedFiles).toEqual([rootFile]);
-		expect(SuggestModal.instances).toHaveLength(0);
-	});
 
 	it('reveals the highlighted file in the Obsidian file navigator with the colon operator', () => {
 		const modal = highlightEntry(rootFile, '~/Root');

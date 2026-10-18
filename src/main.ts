@@ -1,7 +1,6 @@
 import {
 	AbstractInputSuggest,
 	App,
-	Editor,
 	Notice,
 	Platform,
 	Plugin,
@@ -135,7 +134,6 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	constructor(
 		app: App,
 		private currentFolder: TFolder,
-		private readonly initialQuery = '',
 		private readonly showCommandTitle = true,
 		private readonly searchProperties: string[] = DEFAULT_SETTINGS.searchProperties,
 		private readonly showPropertyMatches = DEFAULT_SETTINGS.showPropertyMatches,
@@ -333,10 +331,6 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
 		this.inputEl.addEventListener('input', this.onInput);
-		if (this.initialQuery) {
-			this.inputEl.value = this.initialQuery;
-			this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-		}
 	}
 	onClose(): void {
 		this.inputEl.removeEventListener('keydown', this.onInputKeydown);
@@ -584,7 +578,6 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			new VaultPathSuggestModal(
 				this.app,
 				folder,
-				'',
 				this.showCommandTitle,
 				this.searchProperties,
 				this.showPropertyMatches,
@@ -649,30 +642,6 @@ export default class FilePalettePlugin extends Plugin {
 				new VaultPathSuggestModal(
 					this.app,
 					this.getActiveFolder(),
-					'',
-					this.settings.showCommandTitle,
-					this.settings.searchProperties,
-					this.settings.showPropertyMatches,
-				).open();
-			},
-		});
-		this.addCommand({
-			id: 'find-file-guessing',
-			name: 'Find file (guessing)',
-			callback: () => {
-				const activeEditor = this.app.workspace.activeEditor;
-				const guess = this.getEditorGuess(activeEditor?.editor);
-				const target = guess ? this.resolveTarget(guess) : null;
-
-				if (target) {
-					void this.app.workspace.getLeaf(false).openFile(target);
-					return;
-				}
-
-				new VaultPathSuggestModal(
-					this.app,
-					this.getActiveFolder(),
-					guess,
 					this.settings.showCommandTitle,
 					this.settings.searchProperties,
 					this.settings.showPropertyMatches,
@@ -707,54 +676,6 @@ export default class FilePalettePlugin extends Plugin {
 
 	private getActiveFolder(): TFolder {
 		return this.app.workspace.getActiveFile()?.parent ?? this.app.vault.getRoot();
-	}
-
-	private getEditorGuess(editor: Editor | undefined): string {
-		if (!editor) return '';
-
-		const selection = editor.getSelection().trim();
-		if (selection) return this.normalizeGuess(selection);
-
-		const cursor = editor.getCursor();
-		const line = editor.getLine(cursor.line);
-		const linkStart = line.lastIndexOf('[[', cursor.ch);
-		const linkEnd = line.indexOf(']]', cursor.ch);
-		if (linkStart >= 0 && linkEnd >= 0) {
-			const link = line.slice(linkStart + 2, linkEnd);
-			const aliasStart = link.indexOf('|');
-			const linkpath = (aliasStart < 0 ? link : link.slice(0, aliasStart)).trim();
-			if (linkpath) return linkpath;
-		}
-
-		let start = cursor.ch;
-		while (start > 0 && !this.isGuessDelimiter(line[start - 1])) start--;
-
-		let end = cursor.ch;
-		while (end < line.length && !this.isGuessDelimiter(line[end])) end++;
-
-		return line.slice(start, end).trim();
-	}
-
-	private normalizeGuess(guess: string): string {
-		let normalized = guess.trim();
-		if (normalized.startsWith('[[') && normalized.endsWith(']]')) {
-			normalized = normalized.slice(2, -2);
-			const aliasStart = normalized.indexOf('|');
-			if (aliasStart >= 0) normalized = normalized.slice(0, aliasStart);
-		}
-		return normalized.trim();
-	}
-
-	private isGuessDelimiter(character: string | undefined): boolean {
-		return character === undefined || character.trim() === '' || '[](){}<>"\'|'.includes(character);
-	}
-
-	private resolveTarget(guess: string): TFile | null {
-		const directMatch = this.app.vault.getAbstractFileByPath(guess);
-		if (directMatch instanceof TFile) return directMatch;
-
-		const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
-		return this.app.metadataCache.getFirstLinkpathDest(guess, sourcePath);
 	}
 }
 

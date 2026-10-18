@@ -2,8 +2,8 @@
 
 A fast file and folder picker for Obsidian.
 
-This plugin provides a lightweight palette-style UI for jumping to files,
-and browsing folders through two searchable commands.
+This plugin provides a lightweight palette-style UI for jumping to files
+and browsing folders.
 
 ## Features
 
@@ -12,22 +12,12 @@ and browsing folders through two searchable commands.
 - Fast Tab completion for folders, parent paths, and filenames
 - Open entries directly from a palette-like modal
 - Navigate folders and slash-separated paths
-- Jump to a file inferred from the current editor selection or cursor
 - Keep the interaction lightweight and keyboard-friendly
 
 ## Commands
 
-- `Open file palette`: always opens the picker in the current note's folder
-  (or the vault root when no note is active), without trying to infer anything
-  from the editor.
-- `Find file (guessing)`: first inspects the active editor for selected text,
-  the word under the cursor, or a wiki link such as `[[filename]]`. If that
-  text resolves to a real file, the plugin opens it immediately. Otherwise, it
-  opens the picker with the guessed text prefilled as the initial query.
-
-In other words, `Open file palette` is a manual browse command, while `Find file
-(guessing)` is an intent-aware shortcut that tries to jump directly to a file
-before falling back to the same picker.
+- `Open file palette`: opens the picker in the current note's folder
+  (or the vault root when no note is active).
 
 ## Searching and Navigation
 
