@@ -6,16 +6,9 @@ updates:
       interval: "monthly"
     open-pull-requests-limit: 5
     groups:
-      npm-minor-patch:
-        applies-to: version-updates
-        update-types:
-          - "minor"
-          - "patch"
-      npm-dev-minor-patch:
-        dependency-type: "development"
-        update-types:
-          - "minor"
-          - "patch"
+      npm-dependencies:
+        patterns:
+          - "*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -23,8 +16,6 @@ updates:
       interval: "monthly"
     open-pull-requests-limit: 5
     groups:
-      actions-minor-patch:
-        applies-to: version-updates
-        update-types:
-          - "minor"
-          - "patch"
+      actions-dependencies:
+        patterns:
+          - "*"
