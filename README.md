@@ -56,9 +56,9 @@ The picker fuzzy-matches items in the active folder:
 | Enter | Open a file or browse into a folder |
 | Tab | Complete the highlighted file name, folder (`/`), or parent (`../`) |
 | Backspace (empty search) or select `..` | Go to the parent folder |
-| `:` | Reveal the highlighted file or folder in Obsidian's file navigator |
-| `?` | Show it in the system file explorer |
-| `*` | Open it with the system default app |
+| `:` | Reveal the highlighted file or folder (including `..`) in Obsidian's file navigation sidebar |
+| `?` | Show the highlighted file or folder (including `..`) in your system file explorer (Finder or Windows Explorer) |
+| `*` | Open the highlighted file or folder with your system default app |
 | Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link in the vault's configured format |
 
 **Open highlighted files**

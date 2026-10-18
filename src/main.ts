@@ -463,10 +463,14 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private runSelectedOperator(operator: ':' | '?' | '*'): void {
 		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
 		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
-		if (!entry?.file) return;
+		if (!entry) return;
+		const folder = this.getQueryFolder(this.inputEl.value)?.folder ?? this.currentFolder;
+		const target = entry.isParent ? folder.parent : entry.file;
+		if (!target) return;
 
 		if (operator === ':') {
-			const fileExplorerView = this.app.workspace.getLeavesOfType('file-explorer')[0]?.view as
+			const fileExplorerLeaf = this.app.workspace.getLeavesOfType('file-explorer')[0];
+			const fileExplorerView = fileExplorerLeaf?.view as
 				| FileExplorerViewLike
 				| undefined;
 			if (!fileExplorerView?.revealInFolder) {
@@ -474,7 +478,8 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				return;
 			}
 
-			fileExplorerView.revealInFolder(entry.file);
+			(this.app.workspace as { revealLeaf?: (leaf: unknown) => void }).revealLeaf?.(fileExplorerLeaf);
+			fileExplorerView.revealInFolder(target);
 			this.close();
 			return;
 		}
@@ -487,7 +492,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 
 			try {
-				void Promise.resolve(app.openWithDefaultApp.call(this.app, entry.file.path)).catch((error: unknown) => {
+				void Promise.resolve(app.openWithDefaultApp.call(this.app, target.path)).catch((error: unknown) => {
 					const reason = error instanceof Error ? error.message : String(error);
 					new Notice(`Could not open item with the system default app: ${reason}`);
 				});
@@ -505,7 +510,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		try {
-			void Promise.resolve(app.showInFolder.call(this.app, entry.file.path)).catch((error: unknown) => {
+			void Promise.resolve(app.showInFolder.call(this.app, target.path)).catch((error: unknown) => {
 				const reason = error instanceof Error ? error.message : String(error);
 				new Notice(`Could not show item in System File Explorer: ${reason}`);
 			});

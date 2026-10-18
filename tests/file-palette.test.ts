@@ -814,7 +814,7 @@ describe('file palette picker', () => {
 		expect(modal.modalEl.querySelector('.file-palette-current-path')).toBeNull();
 	});
 
-	it('does not run an item operator when the parent suggestion is highlighted', () => {
+	it('reveals the parent folder when the parent suggestion is highlighted with the colon operator', () => {
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
 		if (!modal) throw new Error('Expected the picker modal to open');
@@ -829,8 +829,24 @@ describe('file palette picker', () => {
 
 		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true }));
 
-		expect(revealedItems).toHaveLength(0);
-		expect(shownPaths).toHaveLength(0);
-		expect(openedDefaultAppPaths).toHaveLength(0);
+		expect(revealedItems).toEqual([root]);
+	});
+
+	it('shows the parent folder in System File Explorer when highlighted with the question-mark operator', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the picker modal to open');
+		const parentEntry = modal.getSuggestions('').find((suggestion) => suggestion.isParent);
+		if (!parentEntry) throw new Error('Expected the parent-folder suggestion');
+		modal.resultContainerEl.empty();
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(parentEntry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));
+
+		expect(shownPaths).toEqual([root.path]);
 	});
 });
