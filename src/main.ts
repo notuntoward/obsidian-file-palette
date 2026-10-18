@@ -93,6 +93,14 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.updateCurrentPathDisplay();
 	};
 	private readonly onInputKeydown = (event: KeyboardEvent): void => {
+		if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+			event.preventDefault();
+			if (!event.shiftKey) {
+				this.completeSelectedSuggestion();
+			}
+			return;
+		}
+
 		if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && (event.shiftKey || event.altKey)) {
 			const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
 			const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
@@ -352,17 +360,52 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const alternate = Platform.isMacOS ? '⌥' : 'Alt+';
 		const shortcuts = footer.createDiv({ cls: 'fp-footer-shortcuts' });
 		const actions = shortcuts.createDiv({ cls: 'fp-footer-actions' });
-		this.renderHint(actions, '~', 'Vault root');
+		this.renderHint(actions, 'Tab', 'Complete');
+		this.renderHint(actions, '~', 'Root');
 		this.renderHint(actions, ':', 'Reveal');
 		this.renderHint(actions, '?', 'Explorer');
-		this.renderHint(actions, '*', 'Default app');
-		this.renderHint(actions, `${modifier}${shift}L`, 'Copy link');
+		this.renderHint(actions, '*', 'App');
+		this.renderHint(actions, `${modifier}${shift}L`, 'Link');
 
 		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
 		this.renderHint(openers, 'Enter', 'Open');
-		this.renderHint(openers, `${modifier}${shift}↵`, 'Tab');
+		this.renderHint(openers, `${modifier}${shift}↵`, 'New tab');
 		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group');
 		if (!Platform.isMobile) this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window');
+	}
+
+	private completeSelectedSuggestion(): void {
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		if (!entry) return;
+
+		let completedName = '';
+		if (entry.isParent) {
+			completedName = '../';
+		} else if (entry.file instanceof TFolder) {
+			completedName = `${entry.file.name}/`;
+		} else if (entry.file instanceof TFile) {
+			completedName = entry.file.extension.toLowerCase() === 'md'
+				? entry.file.basename
+				: entry.file.name;
+		}
+
+		if (!completedName) return;
+
+		let prefix = '';
+		if (this.inputEl.value.startsWith('~')) {
+			const withoutTilde = this.inputEl.value.slice(1);
+			const slashIndex = withoutTilde.lastIndexOf('/');
+			prefix = slashIndex >= 0 ? `~${withoutTilde.slice(0, slashIndex + 1)}` : '~';
+		} else {
+			const slashIndex = this.inputEl.value.lastIndexOf('/');
+			prefix = slashIndex >= 0 ? this.inputEl.value.slice(0, slashIndex + 1) : '';
+		}
+
+		const nextValue = `${prefix}${completedName}`;
+		this.inputEl.value = nextValue;
+		this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		this.inputEl.setSelectionRange(nextValue.length, nextValue.length);
 	}
 
 	private renderHint(container: HTMLElement, command: string, purpose: string): void {

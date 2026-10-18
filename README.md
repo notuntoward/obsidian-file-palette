@@ -9,6 +9,7 @@ and browsing folders through two searchable commands.
 
 - Search files and folders by name, and files by configured string-valued properties
 - Orderless multi-word search matching across filenames and properties
+- Fast Tab completion for folders, parent paths, and filenames
 - Open entries directly from a palette-like modal
 - Navigate folders and slash-separated paths
 - Jump to a file inferred from the current editor selection or cursor
@@ -35,6 +36,7 @@ The picker fuzzy-matches items in the active folder:
 - **Orderless multi-token search**: Enter multiple space-separated words (such as `fake steady`). All words must match, but they can appear in any order and across different fields—one word can match the filename while another matches a frontmatter property. Within each word, fuzzy matching still applies.
 - **Cross-field ranking**: Files matching search terms in both the filename and frontmatter properties are ranked above matches from only one source.
 - **Folder navigation**: Enter slash-separated paths to browse into subfolders (e.g. `folder/subfolder/query`). Prefix a query with `/` or `~` to search from the vault root.
+- **Tab completion**: Press `Tab` on any highlighted suggestion to complete it into the search input. Completing a folder automatically appends a trailing `/`, instantly transitioning the picker into that folder and listing its contents. Completing `..` inserts `../` to navigate upward, and completing a file fills its basename while preserving any folder prefix.
 - **Parent navigation**: Type `..` or press Backspace on an empty search to navigate to the parent folder.
 - **Persistent path**: The current folder path stays above the search input. Long paths retain their deepest folders and show the full path on hover.
 
@@ -52,6 +54,7 @@ The picker fuzzy-matches items in the active folder:
 | --- | --- |
 | Up / Down | Highlight a suggestion |
 | Enter | Open a file or browse into a folder |
+| Tab | Complete the highlighted file name, folder (`/`), or parent (`../`) |
 | Backspace (empty search) or select `..` | Go to the parent folder |
 | `:` | Reveal the highlighted file or folder in Obsidian's file navigator |
 | `?` | Show it in the system file explorer |
@@ -67,5 +70,6 @@ The picker fuzzy-matches items in the active folder:
 | Ctrl+Alt+Shift+Enter; Cmd+Option+Shift+Enter | Open in a new window (desktop only) |
 
 These modifier shortcuts do not change folder selection; folders continue to
-open in the picker. Footer hints use `Ctrl`/`Shift`/`Alt` on Windows and Linux,
-and `⌘`/`⇧`/`⌥` on macOS.
+open in the picker. Footer hints use concise action labels (`Complete`, `Root`,
+`Reveal`, `Explorer`, `App`, `Link`, `Open`, `New tab`, `Group`, `Window`) with
+`Ctrl`/`Shift`/`Alt` on Windows and Linux, and `⌘`/`⇧`/`⌥` on macOS.

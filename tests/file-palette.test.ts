@@ -173,18 +173,19 @@ describe('file palette picker', () => {
 			hint.querySelector('.fp-hint-command')?.textContent,
 			hint.querySelector('.fp-hint-purpose')?.textContent,
 		])).toEqual([
-			['~', 'Vault root'],
+			['Tab', 'Complete'],
+			['~', 'Root'],
 			[':', 'Reveal'],
 			['?', 'Explorer'],
-			['*', 'Default app'],
-			['Ctrl+Shift+L', 'Copy link'],
+			['*', 'App'],
+			['Ctrl+Shift+L', 'Link'],
 		]);
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
 			hint.querySelector('.fp-hint-command')?.textContent,
 			hint.querySelector('.fp-hint-purpose')?.textContent,
 		])).toEqual([
 			['Enter', 'Open'],
-			['Ctrl+Shift+↵', 'Tab'],
+			['Ctrl+Shift+↵', 'New tab'],
 			['Ctrl+Alt+↵', 'Group'],
 			['Ctrl+Alt+Shift+↵', 'Window'],
 		]);
@@ -198,11 +199,11 @@ describe('file palette picker', () => {
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-actions .fp-hint') ?? [], (hint) => [
 			hint.querySelector('.fp-hint-command')?.textContent,
 			hint.querySelector('.fp-hint-purpose')?.textContent,
-		])).toContainEqual(['⌘⇧L', 'Copy link']);
+		])).toContainEqual(['⌘⇧L', 'Link']);
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
 			hint.querySelector('.fp-hint-command')?.textContent,
 			hint.querySelector('.fp-hint-purpose')?.textContent,
-		])).toEqual([['Enter', 'Open'], ['⌘⇧↵', 'Tab'], ['⌘⌥↵', 'Group'], ['⌘⌥⇧↵', 'Window']]);
+		])).toEqual([['Enter', 'Open'], ['⌘⇧↵', 'New tab'], ['⌘⌥↵', 'Group'], ['⌘⌥⇧↵', 'Window']]);
 		expect(modal?.modalEl.querySelector('.fp-footer-openers .fp-hint-command[title]')?.getAttribute('title'))
 			.toBe('⌘⇧Return');
 	});
@@ -664,6 +665,47 @@ describe('file palette picker', () => {
 
 		expect(event.defaultPrevented).toBe(false);
 		expect(workspace.getLeaf).not.toHaveBeenCalled();
+	});
+
+	it('completes the highlighted folder suggestion with a trailing slash on Tab', () => {
+		const modal = highlightEntry(nestedFolder, 'Nes');
+		modal.inputEl.value = 'Nes';
+		const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(modal.inputEl.value).toBe('Nested/');
+		expect(modal.modalEl.querySelector('.fp-path')?.textContent).toBe('/current/Nested');
+	});
+
+	it('completes the highlighted file suggestion basename on Tab and preserves path prefixes', () => {
+		const modal = highlightEntry(rootFile, '~/Root');
+		modal.inputEl.value = '~/Root';
+		const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(modal.inputEl.value).toBe('~/Root note');
+	});
+
+	it('completes the parent entry on Tab', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+		const entry = modal.getSuggestions('').find((suggestion) => suggestion.isParent);
+		if (!entry) throw new Error('Expected parent entry');
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.value = '';
+		const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(modal.inputEl.value).toBe('../');
 	});
 
 	it('hides the new-window shortcut and reports it unavailable on mobile', () => {
