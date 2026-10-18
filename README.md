@@ -12,12 +12,12 @@ A fast file and folder picker for jumping to files and browsing folders.
 | Key | Action |
 | --- | --- |
 | Up / Down | Highlight a suggestion |
-| Tab | Complete the highlighted file name, folder (`/`), or parent (`../`) |
-| Backspace (empty search) or select `..` | Go to the parent folder |
 | Enter | Open in current tab or browse into a folder|
 | Ctrl+Shift+Enter; Cmd+Shift+Enter | Open in a new tab |
 | Ctrl+Alt+Enter; Cmd+Option+Enter | Open in a new tab group |
 | Ctrl+Alt+Shift+Enter; Cmd+Option+Shift+Enter | Open in a new window (desktop only) |
+| Tab | Complete the highlighted file name, folder (`/`), or parent (`../`) |
+| Backspace (empty search) or select `..` | Go to the parent folder |
 | `:` | Reveal the highlighted file or folder (including `..`) in Obsidian's file navigation sidebar |
 | `?` | Show the highlighted file or folder (including `..`) in your system file explorer (Finder or Windows Explorer) |
 | `*` | Open the highlighted file or folder with your system default app |
