@@ -8,6 +8,7 @@ and browsing folders through two searchable commands.
 ## Features
 
 - Search files and folders by name, and files by configured string-valued properties
+- Orderless multi-word search matching across filenames and properties
 - Open entries directly from a palette-like modal
 - Navigate folders and slash-separated paths
 - Jump to a file inferred from the current editor selection or cursor
@@ -27,18 +28,23 @@ In other words, `Open file palette` is a manual browse command, while `Find file
 (guessing)` is an intent-aware shortcut that tries to jump directly to a file
 before falling back to the same picker.
 
-The picker fuzzy-matches the current folder's children. Enter slash-separated
-paths to browse folders; prefix a query with `/` or `~` to search from the vault
-root. The current folder path stays above the search input, below the
-`File palette` title. The title can be hidden with the `Show command title`
-setting; the path remains visible. File frontmatter properties listed in
-`Search properties` are searched alongside filenames; matching both ranks a
-file above matches from only one source. This setting defaults to `title`,
-accepts comma-separated property names, and offers completion from string-valued
-properties present in the vault. Only string-valued properties are searched.
-Enable `Show matching properties` to display the configured string values
-beneath matching filenames, with fuzzy-matched text highlighted. Long paths
-retain their deepest folders and show the full path on hover.
+## Searching and Navigation
+
+The picker fuzzy-matches items in the active folder:
+
+- **Orderless multi-token search**: Enter multiple space-separated words (such as `fake steady`). All words must match, but they can appear in any order and across different fields—one word can match the filename while another matches a frontmatter property. Within each word, fuzzy matching still applies.
+- **Cross-field ranking**: Files matching search terms in both the filename and frontmatter properties are ranked above matches from only one source.
+- **Folder navigation**: Enter slash-separated paths to browse into subfolders (e.g. `folder/subfolder/query`). Prefix a query with `/` or `~` to search from the vault root.
+- **Parent navigation**: Type `..` or press Backspace on an empty search to navigate to the parent folder.
+- **Persistent path**: The current folder path stays above the search input. Long paths retain their deepest folders and show the full path on hover.
+
+## Settings
+
+- **Show command title**: Toggle showing the "File palette" heading above the current folder path in the picker modal (defaults to enabled). When disabled, the folder path remains visible.
+- **Search properties**: Comma-separated frontmatter properties to search alongside file names (defaults to `title`). Offers autocomplete suggestions for string-valued properties found in your vault. Only string-valued properties are searched.
+- **Show matching properties**: Toggle displaying configured frontmatter property values underneath each matching file name in the suggestion list (defaults to disabled). When enabled, matched text across all search terms is highlighted.
+
+## Shortcuts
 
 **Picker shortcuts**
 
@@ -51,7 +57,6 @@ retain their deepest folders and show the full path on hover.
 | `?` | Show it in the system file explorer |
 | `*` | Open it with the system default app |
 | Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link in the vault's configured format |
-
 
 **Open highlighted files**
 
