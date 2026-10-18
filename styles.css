@@ -114,11 +114,37 @@
 	padding-block: var(--size-4-1);
 }
 
+.file-palette-suggestion-details {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	min-width: 0;
+}
+
 .file-palette-suggestion-name {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.file-palette-suggestion-properties {
+	overflow: hidden;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: var(--line-height-tight);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.file-palette-suggestion-property {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.file-palette-suggestion-property-name {
+	margin-inline-end: var(--size-4-1);
+	color: var(--text-faint);
 }
 
 .file-palette-suggestion-extension {

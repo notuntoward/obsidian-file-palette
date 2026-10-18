@@ -63,6 +63,15 @@ export class Setting {
 		onChange: (callback: (value: boolean) => void | Promise<void>) => void;
 		change: (value: boolean) => Promise<void>;
 	} | null = null;
+	text: {
+		value: string;
+		placeholder: string;
+		inputEl: HTMLInputElement;
+		setValue: (value: string) => void;
+		setPlaceholder: (value: string) => void;
+		onChange: (callback: (value: string) => void | Promise<void>) => void;
+		change: (value: string) => Promise<void>;
+	} | null = null;
 
 	constructor(_containerEl: any) {
 		this.containerEl = _containerEl;
@@ -76,7 +85,34 @@ export class Setting {
 	setDesc(_desc: string): this {
 		return this;
 	}
-	addText(_cb: (text: any) => any): this {
+	addText(cb: (text: any) => any): this {
+		const text = {
+			value: '',
+			placeholder: '',
+			inputEl: document.createElement('input'),
+			callback: (_value: string): void | Promise<void> => {},
+			setValue(value: string) {
+				this.value = value;
+				this.inputEl.value = value;
+				return this;
+			},
+			setPlaceholder(value: string) {
+				this.placeholder = value;
+				this.inputEl.placeholder = value;
+				return this;
+			},
+			onChange(callback: (value: string) => void | Promise<void>) {
+				this.callback = callback;
+				return this;
+			},
+			async change(value: string): Promise<void> {
+				this.value = value;
+				this.inputEl.value = value;
+				await this.callback(value);
+			},
+		};
+		this.text = text;
+		cb(text);
 		return this;
 	}
 	addToggle(cb: (toggle: any) => any): this {
@@ -181,6 +217,42 @@ export class SuggestModal<T> extends Modal {
 	renderSuggestion(_value: T, _element: HTMLElement): void {}
 }
 
+export class AbstractInputSuggest<T> {
+	static instances: AbstractInputSuggest<any>[] = [];
+	private selectCallback: ((value: T, evt: MouseEvent | KeyboardEvent) => any) | null = null;
+
+	constructor(public app: any, public inputEl: HTMLInputElement) {
+		AbstractInputSuggest.instances.push(this as AbstractInputSuggest<unknown>);
+	}
+
+	onSelect(callback: (value: T, evt: MouseEvent | KeyboardEvent) => any): this {
+		this.selectCallback = callback;
+		return this;
+	}
+
+	getValue(): string {
+		return this.inputEl.value;
+	}
+
+	setValue(value: string): void {
+		this.inputEl.value = value;
+	}
+
+	getSuggestions(query: string): T[] {
+		return query ? [] : [];
+	}
+
+	suggestions(query = this.getValue()): T[] {
+		return this.getSuggestions(query);
+	}
+
+	select(value: T): void {
+		this.selectCallback?.(value, new KeyboardEvent('keydown'));
+	}
+
+	close(): void {}
+}
+
 export class TAbstractFile {
 	constructor(
 		public name: string,
@@ -209,8 +281,28 @@ export function prepareFuzzySearch(query: string): (text: string) => { score: nu
 	const normalizedQuery = query.toLowerCase();
 	return (text) => {
 		const index = text.toLowerCase().indexOf(normalizedQuery);
-		return index < 0 ? null : { score: -index };
+		return index < 0 ? null : {
+			score: -index,
+			matches: normalizedQuery ? [[index, index + normalizedQuery.length]] : [],
+		};
 	};
+}
+
+export function renderMatches(
+	element: HTMLElement | DocumentFragment,
+	text: string,
+	matches: [number, number][] | null,
+): void {
+	let offset = 0;
+	for (const [start, end] of matches ?? []) {
+		element.append(document.createTextNode(text.slice(offset, start)));
+		const highlight = document.createElement('span');
+		highlight.className = 'suggestion-highlight';
+		highlight.textContent = text.slice(start, end);
+		element.append(highlight);
+		offset = end;
+	}
+	element.append(document.createTextNode(text.slice(offset)));
 }
 
 function installDomHelpers(): void {

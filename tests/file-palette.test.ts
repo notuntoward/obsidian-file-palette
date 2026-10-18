@@ -5,7 +5,16 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FilePalettePlugin from '../src/main';
 import * as ObsidianMock from './__mocks__/obsidian';
-import { Notice, Platform, Setting, SuggestModal, TAbstractFile, TFile, TFolder } from './__mocks__/obsidian';
+import {
+	AbstractInputSuggest,
+	Notice,
+	Platform,
+	Setting,
+	SuggestModal,
+	TAbstractFile,
+	TFile,
+	TFolder,
+} from './__mocks__/obsidian';
 import type { App, Editor } from 'obsidian';
 
 function addFolder(parent: TFolder, name: string): TFolder {
@@ -41,9 +50,13 @@ describe('file palette picker', () => {
 	let openedDefaultAppPaths: string[];
 	let getFirstLinkpathDest: ReturnType<typeof vi.fn>;
 	let generateMarkdownLink: ReturnType<typeof vi.fn>;
+	let metadataByFile: Map<TFile, { frontmatter: Record<string, unknown> }>;
 	let plugin: FilePalettePlugin & {
 		commands: { id: string; callback: () => void }[];
-		settingTabs: { display: () => void }[];
+		settingTabs: {
+			getSettingDefinitions: () => { name?: string; control?: { key: string }; render?: (setting: Setting, group: never) => (() => void) | void }[];
+			setControlValue: (key: string, value: unknown) => Promise<void>;
+		}[];
 		data: unknown;
 	};
 
@@ -51,6 +64,7 @@ describe('file palette picker', () => {
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 		SuggestModal.instances.length = 0;
+		AbstractInputSuggest.instances.length = 0;
 		Setting.instances.length = 0;
 		Notice.messages.length = 0;
 		Platform.isMobile = false;
@@ -76,6 +90,7 @@ describe('file palette picker', () => {
 		});
 		getFirstLinkpathDest = vi.fn((_linkpath: string, _sourcePath: string) => null as TFile | null);
 		generateMarkdownLink = vi.fn((file: TFile, _sourcePath: string) => `[[${file.basename}]]`);
+		metadataByFile = new Map();
 		workspace = {
 			getActiveFile: () => ({ parent: currentFolder, path: 'current/source.md' }),
 			activeEditor: undefined,
@@ -86,6 +101,7 @@ describe('file palette picker', () => {
 			vault: {
 				getRoot: () => root,
 				getAbstractFileByPath: (path: string) => filesByPath.get(path) ?? null,
+				getMarkdownFiles: () => [...metadataByFile.keys()],
 			},
 			showInFolder: (path: string) => {
 				shownPaths.push(path);
@@ -94,14 +110,13 @@ describe('file palette picker', () => {
 				openedDefaultAppPaths.push(path);
 			},
 			workspace,
-			metadataCache: { getFirstLinkpathDest },
+			metadataCache: {
+				getFirstLinkpathDest,
+				getFileCache: (file: TFile) => metadataByFile.get(file) ?? null,
+			},
 			fileManager: { generateMarkdownLink },
 		} as unknown as App;
-		plugin = new FilePalettePlugin(app, {} as never) as FilePalettePlugin & {
-			commands: { id: string; callback: () => void }[];
-			settingTabs: { display: () => void }[];
-			data: unknown;
-		};
+		plugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
 		await plugin.onload();
 	});
 
@@ -194,13 +209,17 @@ describe('file palette picker', () => {
 
 	it('allows the command title to be hidden from plugin settings without hiding the path', async () => {
 		const settingTab = plugin.settingTabs[0];
-		settingTab.display();
-		const setting = Setting.instances.at(-1);
-		expect(setting?.name).toBe('Show command title');
-		expect(setting?.toggle?.value).toBe(true);
-		await setting?.toggle?.change(false);
+		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Show command title');
+		expect(definition?.control?.key).toBe('showCommandTitle');
+		expect(settingTab.getSettingDefinitions().find(({ name }) => name === 'Show matching properties')?.control?.key)
+			.toBe('showPropertyMatches');
+		await settingTab.setControlValue('showCommandTitle', false);
 		expect(plugin.settings.showCommandTitle).toBe(false);
-		expect(plugin.data).toEqual({ showCommandTitle: false });
+		expect(plugin.data).toEqual({
+			showCommandTitle: false,
+			searchProperties: ['title'],
+			showPropertyMatches: false,
+		});
 
 		const reloadedPlugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
 		reloadedPlugin.data = plugin.data;
@@ -210,6 +229,104 @@ describe('file palette picker', () => {
 		const modal = SuggestModal.instances.at(-1);
 		expect(modal?.modalEl.querySelector('.fp-title')?.hasAttribute('hidden')).toBe(true);
 		expect(modal?.modalEl.querySelector('.fp-path')?.textContent).toBe('/current');
+	});
+
+	it('searches configured string-valued properties and ranks files matching both name and property higher', () => {
+		const matchingBoth = addFile(currentFolder, 'query-name.md');
+		const matchingName = addFile(currentFolder, 'query-name-only.md');
+		const matchingProperty = addFile(currentFolder, 'unrelated.md');
+		const nonStringProperty = addFile(currentFolder, 'also-unrelated.md');
+		metadataByFile.set(matchingBoth, { frontmatter: { title: 'query title' } });
+		metadataByFile.set(matchingProperty, { frontmatter: { title: 'query title' } });
+		metadataByFile.set(nonStringProperty, { frontmatter: { title: ['query title'] } });
+		vi.spyOn(ObsidianMock, 'prepareFuzzySearch').mockReturnValue((value) => {
+			if (value === 'query-name.md') return { score: 1, matches: [] };
+			if (value === 'query-name-only.md') return { score: 10, matches: [] };
+			if (value === 'query title') return { score: 4, matches: [] };
+			return null;
+		});
+
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		const suggestions = modal?.getSuggestions('query');
+
+		expect(suggestions?.map(({ file }) => file)).toEqual([matchingBoth, matchingName, matchingProperty]);
+	});
+
+	it('saves a configurable property list and completes string-valued property names', async () => {
+		const settingTab = plugin.settingTabs[0];
+		const file = addFile(currentFolder, 'property-source.md');
+		metadataByFile.set(file, {
+			frontmatter: {
+				title: 'A title',
+				category: 'literaturenote',
+				tags: ['one', 'two'],
+			},
+		});
+		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		if (!definition?.render) throw new Error('Expected a custom property setting renderer');
+		const setting = new Setting(document.createElement('div'));
+		definition.render(setting, {} as never);
+		expect(setting?.text?.value).toBe('title');
+		await setting?.text?.change('title, cat');
+		setting?.text?.inputEl.setSelectionRange(setting.text.value.length, setting.text.value.length);
+		const propertySuggest = AbstractInputSuggest.instances.at(-1);
+		expect(propertySuggest?.suggestions()).toContain('category');
+		expect(propertySuggest?.suggestions()).not.toContain('tags');
+		propertySuggest?.select('category');
+		expect(setting?.text?.inputEl.value).toBe('title, category, ');
+		expect(plugin.settings.searchProperties).toEqual(['title', 'category']);
+
+		const categoryMatch = addFile(currentFolder, 'category-match.md');
+		metadataByFile.set(categoryMatch, { frontmatter: { category: 'distinctive phrase' } });
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		expect(modal?.getSuggestions('distinctive').some(({ file }) => file === categoryMatch)).toBe(true);
+	});
+
+	it('shows matching property values beneath filenames with fuzzy-match highlighting', async () => {
+		const matchingFile = addFile(currentFolder, 'Unrelated.md');
+		metadataByFile.set(matchingFile, { frontmatter: { title: 'A unique title' } });
+		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
+		vi.spyOn(ObsidianMock, 'prepareFuzzySearch').mockReturnValue((value) => {
+			if (value === 'A unique title') return { score: 8, matches: [[2, 8]] };
+			return null;
+		});
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		const entry = modal?.getSuggestions('unique').find(({ file }) => file === matchingFile);
+		if (!modal || !entry) throw new Error('Expected the property-matching file suggestion');
+		const element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+
+		expect(element.querySelector('.file-palette-suggestion-property-name')?.textContent).toBe('title:');
+		expect(element.querySelector('.file-palette-suggestion-property-value')?.textContent).toBe('A unique title');
+		expect(Array.from(element.querySelectorAll('.suggestion-highlight'), (highlight) => highlight.textContent))
+			.toEqual(['unique']);
+	});
+
+	it('does not show property details when disabled or when a file has no configured string property', async () => {
+		const fileWithoutProperty = addFile(currentFolder, 'query-only.md');
+		const fileWithProperty = addFile(currentFolder, 'query-property.md');
+		metadataByFile.set(fileWithProperty, { frontmatter: { title: 'A query title' } });
+		runCommand('open-palette');
+		let modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the file picker');
+		let entry = modal.getSuggestions('query').find(({ file }) => file === fileWithProperty);
+		if (!entry) throw new Error('Expected a file match');
+		let element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+		expect(element.querySelector('.file-palette-suggestion-properties')).toBeNull();
+
+		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
+		runCommand('open-palette');
+		modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the file picker');
+		entry = modal.getSuggestions('query').find(({ file }) => file === fileWithoutProperty);
+		if (!entry) throw new Error('Expected a filename match');
+		element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+		expect(element.querySelector('.file-palette-suggestion-properties')).toBeNull();
 	});
 
 	it('uses the vault root for tilde queries and updates the displayed path', () => {

@@ -7,7 +7,7 @@ and browsing folders through two searchable commands.
 
 ## Features
 
-- Search files and folders by name
+- Search files and folders by name, and files by configured string-valued properties
 - Open entries directly from a palette-like modal
 - Navigate folders and slash-separated paths
 - Jump to a file inferred from the current editor selection or cursor
@@ -31,8 +31,14 @@ The picker fuzzy-matches the current folder's children. Enter slash-separated
 paths to browse folders; prefix a query with `/` or `~` to search from the vault
 root. The current folder path stays above the search input, below the
 `File palette` title. The title can be hidden with the `Show command title`
-setting; the path remains visible. Long paths retain their deepest folders and
-show the full path on hover.
+setting; the path remains visible. File frontmatter properties listed in
+`Search properties` are searched alongside filenames; matching both ranks a
+file above matches from only one source. This setting defaults to `title`,
+accepts comma-separated property names, and offers completion from string-valued
+properties present in the vault. Only string-valued properties are searched.
+Enable `Show matching properties` to display the configured string values
+beneath matching filenames, with fuzzy-matched text highlighted. Long paths
+retain their deepest folders and show the full path on hover.
 
 **Picker shortcuts**
 
@@ -46,10 +52,6 @@ show the full path on hover.
 | `*` | Open it with the system default app |
 | Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link in the vault's configured format |
 
-System file explorer and default-app actions depend on platform support. The
-operator characters `:`, `?`, and `*` cannot appear in Windows filenames. The
-picker includes every file type: Markdown extensions are omitted from names,
-while other extensions appear as right-aligned hints.
 
 **Open highlighted files**
 

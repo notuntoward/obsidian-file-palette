@@ -1,4 +1,5 @@
 import {
+	AbstractInputSuggest,
 	App,
 	Editor,
 	Notice,
@@ -6,26 +7,47 @@ import {
 	Plugin,
 	PluginSettingTab,
 	prepareFuzzySearch,
+	renderMatches,
 	Setting,
 	SuggestModal,
 	TAbstractFile,
 	TFile,
 	TFolder,
 } from 'obsidian';
+import type { SearchResult, SettingDefinitionItem } from 'obsidian';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
 interface FilePaletteSettings {
 	showCommandTitle: boolean;
+	searchProperties: string[];
+	showPropertyMatches: boolean;
 }
 
 const DEFAULT_SETTINGS: FilePaletteSettings = {
 	showCommandTitle: true,
+	searchProperties: ['title'],
+	showPropertyMatches: false,
 };
+
+function normalizeSearchProperties(value: unknown): string[] {
+	if (!Array.isArray(value)) return [...DEFAULT_SETTINGS.searchProperties];
+	return [...new Set(value
+		.filter((property): property is string => typeof property === 'string')
+		.map((property) => property.trim())
+		.filter(Boolean))];
+}
 
 interface VaultEntry {
 	file: TAbstractFile | null;
 	isParent: boolean;
+	propertyValues?: PropertyMatch[];
+}
+
+interface PropertyMatch {
+	property: string;
+	value: string;
+	match: SearchResult | null;
 }
 
 interface FileExplorerViewLike {
@@ -88,6 +110,8 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		private currentFolder: TFolder,
 		private readonly initialQuery = '',
 		private readonly showCommandTitle = true,
+		private readonly searchProperties: string[] = DEFAULT_SETTINGS.searchProperties,
+		private readonly showPropertyMatches = DEFAULT_SETTINGS.showPropertyMatches,
 	) {
 		super(app);
 		this.setPlaceholder('Search this folder; select a folder to open it');
@@ -99,10 +123,33 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const { folder, name } = location;
 		const search = prepareFuzzySearch(name);
 		const entries = folder.children.flatMap((file) => {
-			const match = search(file.name);
-			return match ? [{ entry: { file, isParent: false }, score: match.score }] : [];
+			const nameMatch = name ? search(file.name) : null;
+			const propertyValues = file instanceof TFile && (name || this.showPropertyMatches)
+				? this.getPropertyValues(file, name ? search : () => null)
+				: [];
+			const propertyMatch = propertyValues.reduce<SearchResult | null>(
+				(best, value) => value.match && (!best || value.match.score > best.score) ? value.match : best,
+				null,
+			);
+			if (name && !nameMatch && !propertyMatch) return [];
+			return [{
+				entry: {
+					file,
+					isParent: false,
+					propertyValues: this.showPropertyMatches ? propertyValues : undefined,
+				},
+				matchCount: Number(Boolean(nameMatch)) + Number(Boolean(propertyMatch)),
+				score: name
+					? Math.max(nameMatch?.score ?? Number.NEGATIVE_INFINITY, propertyMatch?.score ?? Number.NEGATIVE_INFINITY)
+					: 0,
+				nameScore: nameMatch?.score ?? 0,
+			}];
 		});
-		entries.sort((left, right) => right.score - left.score);
+		entries.sort((left, right) =>
+			right.matchCount - left.matchCount ||
+			right.score - left.score ||
+			right.nameScore - left.nameScore
+		);
 		const suggestions: VaultEntry[] = entries.map(({ entry }) => entry);
 
 		if (folder.parent && (!name || prepareFuzzySearch(name)('..'))) {
@@ -128,7 +175,20 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		if (!(file instanceof TFile)) return;
-		element.createSpan({ cls: 'file-palette-suggestion-name' }).setText(file.basename);
+		const details = element.createDiv({ cls: 'file-palette-suggestion-details' });
+		details.createDiv({ cls: 'file-palette-suggestion-name' }).setText(file.basename);
+		if (entry.propertyValues?.length) {
+			const properties = details.createDiv({ cls: 'file-palette-suggestion-properties' });
+			for (const propertyValue of entry.propertyValues) {
+				const propertyEl = properties.createDiv({ cls: 'file-palette-suggestion-property' });
+				propertyEl.createSpan({ cls: 'file-palette-suggestion-property-name' }).setText(`${propertyValue.property}:`);
+				renderMatches(
+					propertyEl.createSpan({ cls: 'file-palette-suggestion-property-value' }),
+					propertyValue.value,
+					propertyValue.match?.matches ?? null,
+				);
+			}
+		}
 		if (file.extension.toLowerCase() !== 'md') {
 			element.createSpan({ cls: 'file-palette-suggestion-extension' }).setText(file.extension.toUpperCase());
 		}
@@ -382,8 +442,27 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private navigateToFolder(folder: TFolder): void {
 		this.close();
 		window.setTimeout(() => {
-			new VaultPathSuggestModal(this.app, folder, '', this.showCommandTitle).open();
+			new VaultPathSuggestModal(
+				this.app,
+				folder,
+				'',
+				this.showCommandTitle,
+				this.searchProperties,
+				this.showPropertyMatches,
+			).open();
 		}, 0);
+	}
+
+	private getPropertyValues(file: TFile, search: (text: string) => SearchResult | null): PropertyMatch[] {
+		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+		if (!frontmatter) return [];
+		const propertyValues: PropertyMatch[] = [];
+		for (const property of this.searchProperties) {
+			const value: unknown = frontmatter[property];
+			if (typeof value !== 'string') continue;
+			propertyValues.push({ property, value, match: search(value) });
+		}
+		return propertyValues;
 	}
 
 	private getQueryFolder(query: string): { folder: TFolder; name: string } | null {
@@ -415,7 +494,10 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 }
 
 export default class FilePalettePlugin extends Plugin {
-	settings: FilePaletteSettings = { ...DEFAULT_SETTINGS };
+	settings: FilePaletteSettings = {
+		...DEFAULT_SETTINGS,
+		searchProperties: [...DEFAULT_SETTINGS.searchProperties],
+	};
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -425,7 +507,14 @@ export default class FilePalettePlugin extends Plugin {
 			// eslint-disable-next-line obsidianmd/commands/no-plugin-name-in-command-name -- Keep the explicit label requested for discoverability.
 			name: 'Open file palette',
 			callback: () => {
-				new VaultPathSuggestModal(this.app, this.getActiveFolder(), '', this.settings.showCommandTitle).open();
+				new VaultPathSuggestModal(
+					this.app,
+					this.getActiveFolder(),
+					'',
+					this.settings.showCommandTitle,
+					this.settings.searchProperties,
+					this.settings.showPropertyMatches,
+				).open();
 			},
 		});
 		this.addCommand({
@@ -441,7 +530,14 @@ export default class FilePalettePlugin extends Plugin {
 					return;
 				}
 
-				new VaultPathSuggestModal(this.app, this.getActiveFolder(), guess, this.settings.showCommandTitle).open();
+				new VaultPathSuggestModal(
+					this.app,
+					this.getActiveFolder(),
+					guess,
+					this.settings.showCommandTitle,
+					this.settings.searchProperties,
+					this.settings.showPropertyMatches,
+				).open();
 			},
 		});
 	}
@@ -452,14 +548,22 @@ export default class FilePalettePlugin extends Plugin {
 
 	private async loadSettings(): Promise<void> {
 		const savedSettings: unknown = await this.loadData();
+		const settings = typeof savedSettings === 'object' && savedSettings !== null ? savedSettings : {};
 		const showCommandTitle =
-			typeof savedSettings === 'object' &&
-			savedSettings !== null &&
-			'showCommandTitle' in savedSettings &&
-			typeof savedSettings.showCommandTitle === 'boolean'
-				? savedSettings.showCommandTitle
+			'showCommandTitle' in settings &&
+			typeof settings.showCommandTitle === 'boolean'
+				? settings.showCommandTitle
 				: DEFAULT_SETTINGS.showCommandTitle;
-		this.settings = { showCommandTitle };
+		const searchProperties =
+			'searchProperties' in settings && Array.isArray(settings.searchProperties)
+				? normalizeSearchProperties(settings.searchProperties)
+				: [...DEFAULT_SETTINGS.searchProperties];
+		const showPropertyMatches =
+			'showPropertyMatches' in settings &&
+			typeof settings.showPropertyMatches === 'boolean'
+				? settings.showPropertyMatches
+				: DEFAULT_SETTINGS.showPropertyMatches;
+		this.settings = { showCommandTitle, searchProperties, showPropertyMatches };
 	}
 
 	private getActiveFolder(): TFolder {
@@ -515,29 +619,151 @@ export default class FilePalettePlugin extends Plugin {
 	}
 }
 
+class PropertyNameSuggest extends AbstractInputSuggest<string> {
+	private readonly propertyNames: string[];
+
+	constructor(
+		app: App,
+		private readonly onSelectProperty: (value: string) => void,
+		private readonly propertyInputEl: HTMLInputElement,
+	) {
+		super(app, propertyInputEl);
+		this.propertyNames = this.collectStringPropertyNames();
+		this.onSelect((property) => {
+			this.onSelectProperty(this.replaceCurrentProperty(property));
+		});
+	}
+
+	renderSuggestion(property: string, element: HTMLElement): void {
+		element.setText(property);
+	}
+
+	protected getSuggestions(_query: string): string[] {
+		const value = this.getValue();
+		const cursor = this.propertyInputEl.selectionStart ?? value.length;
+		const tokenStart = value.lastIndexOf(',', cursor - 1) + 1;
+		const currentToken = value.slice(tokenStart, cursor).trim();
+		const alreadySelected = new Set(
+			value.slice(0, tokenStart).split(',').map((property) => property.trim().toLowerCase()).filter(Boolean),
+		);
+		const search = prepareFuzzySearch(currentToken);
+		const matches: { property: string; score: number }[] = [];
+		for (const property of this.propertyNames) {
+			if (alreadySelected.has(property.toLowerCase())) continue;
+			const match = currentToken ? search(property) : { score: 0, matches: [] };
+			if (match) matches.push({ property, score: match.score });
+		}
+		return matches
+			.sort((left, right) => right.score - left.score || left.property.localeCompare(right.property))
+			.map(({ property }) => property);
+	}
+
+	private collectStringPropertyNames(): string[] {
+		const properties = new Set<string>();
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (!frontmatter) continue;
+			for (const [property, value] of Object.entries(frontmatter)) {
+				if (typeof value === 'string') properties.add(property);
+			}
+		}
+		return [...properties];
+	}
+
+	private replaceCurrentProperty(property: string): string {
+		const value = this.getValue();
+		const cursor = this.propertyInputEl.selectionStart ?? value.length;
+		let tokenStart = value.lastIndexOf(',', cursor - 1) + 1;
+		while (tokenStart < cursor && /\s/.test(value[tokenStart])) tokenStart++;
+		const tokenEndIndex = value.indexOf(',', cursor);
+		const tokenEnd = tokenEndIndex < 0 ? value.length : tokenEndIndex;
+		const suffix = value.slice(tokenEnd);
+		const nextValue = `${value.slice(0, tokenStart)}${property}${suffix || ', '}`;
+		const nextCursor = tokenStart + property.length + (suffix ? 0 : 2);
+		this.setValue(nextValue);
+		this.propertyInputEl.setSelectionRange(nextCursor, nextCursor);
+		return nextValue;
+	}
+}
+
 class FilePaletteSettingTab extends PluginSettingTab {
 	constructor(app: App, private readonly plugin: FilePalettePlugin) {
 		super(app, plugin);
 	}
 
-	display(): void {
-		this.containerEl.empty();
-		new Setting(this.containerEl)
-			.setName('Show command title')
-			.setDesc('Show “File palette” above the current folder path in the file picker.')
-			.addToggle((toggle) => {
-				toggle.setValue(this.plugin.settings.showCommandTitle);
-				toggle.onChange(async (value) => {
-					this.plugin.settings.showCommandTitle = value;
-					try {
-						await this.plugin.saveSettings();
-					} catch (error) {
-						this.plugin.settings.showCommandTitle = !value;
-						toggle.setValue(!value);
-						const reason = error instanceof Error ? error.message : String(error);
-						new Notice(`Could not save file palette settings: ${reason}`);
-					}
-				});
-			});
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [
+			{
+				name: 'Show command title',
+				desc: 'Show “File palette” above the current folder path in the file picker.',
+				control: {
+					type: 'toggle',
+					key: 'showCommandTitle',
+					defaultValue: DEFAULT_SETTINGS.showCommandTitle,
+				},
+			},
+			{
+				name: 'Search properties',
+				desc: 'Comma-separated frontmatter properties to search alongside file names. Only string values are searched.',
+				render: (setting) => {
+					let propertySuggest: PropertyNameSuggest | null = null;
+					setting.addText((text) => {
+						const saveSearchProperties = (value: string): Promise<void> =>
+							this.saveSearchProperties(value, (nextValue) => text.setValue(nextValue));
+						text
+							.setPlaceholder('title, category')
+							.setValue(this.plugin.settings.searchProperties.join(', '))
+							.onChange(saveSearchProperties);
+						propertySuggest = new PropertyNameSuggest(
+							this.app,
+							saveSearchProperties,
+							text.inputEl,
+						);
+					});
+					return () => propertySuggest?.close();
+				},
+			},
+			{
+				name: 'Show matching properties',
+				desc: 'Show configured string-valued properties below each matching file name, with matched text highlighted.',
+				control: {
+					type: 'toggle',
+					key: 'showPropertyMatches',
+					defaultValue: DEFAULT_SETTINGS.showPropertyMatches,
+				},
+			},
+		];
+	}
+
+	getControlValue(key: string): unknown {
+		if (key === 'showCommandTitle') return this.plugin.settings.showCommandTitle;
+		if (key === 'showPropertyMatches') return this.plugin.settings.showPropertyMatches;
+		return undefined;
+	}
+
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		if ((key !== 'showCommandTitle' && key !== 'showPropertyMatches') || typeof value !== 'boolean') return;
+		const previousValue = this.plugin.settings[key];
+		this.plugin.settings[key] = value;
+		try {
+			await this.plugin.saveSettings();
+		} catch (error) {
+			this.plugin.settings[key] = previousValue;
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not save file palette settings: ${reason}`);
+		}
+	}
+
+	private async saveSearchProperties(value: string, setValue: (value: string) => void): Promise<void> {
+		const previousProperties = this.plugin.settings.searchProperties;
+		this.plugin.settings.searchProperties = normalizeSearchProperties(value.split(','));
+		try {
+			await this.plugin.saveSettings();
+		} catch (error) {
+			this.plugin.settings.searchProperties = previousProperties;
+			setValue(previousProperties.join(', '));
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not save file palette settings: ${reason}`);
+		}
 	}
 }
