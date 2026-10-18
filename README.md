@@ -55,6 +55,7 @@ The picker fuzzy-matches items in the active folder:
 
 | Shortcut (Windows/Linux; macOS) | Action |
 | --- | --- |
+| Enter | Open in current tab|
 | Ctrl+Shift+Enter; Cmd+Shift+Enter | Open in a new tab |
 | Ctrl+Alt+Enter; Cmd+Option+Enter | Open in a new tab group |
 | Ctrl+Alt+Shift+Enter; Cmd+Option+Shift+Enter | Open in a new window (desktop only) |
