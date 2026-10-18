@@ -60,7 +60,3 @@ The picker fuzzy-matches items in the active folder:
 | Ctrl+Alt+Enter; Cmd+Option+Enter | Open in a new tab group |
 | Ctrl+Alt+Shift+Enter; Cmd+Option+Shift+Enter | Open in a new window (desktop only) |
 
-These modifier shortcuts do not change folder selection; folders continue to
-open in the picker. Footer hints use concise action labels (`Complete`, `Root`,
-`Reveal`, `Explorer`, `App`, `Link`, `Open`, `New tab`, `Group`, `Window`) with
-`Ctrl`/`Shift`/`Alt` on Windows and Linux, and `⌘`/`⇧`/`⌥` on macOS.
