@@ -2,10 +2,10 @@
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FilePalettePlugin from '../src/main';
 import * as ObsidianMock from './__mocks__/obsidian';
-import { Notice, Platform, SuggestModal, TAbstractFile, TFile, TFolder } from './__mocks__/obsidian';
+import { Notice, Platform, Setting, SuggestModal, TAbstractFile, TFile, TFolder } from './__mocks__/obsidian';
 import type { App, Editor } from 'obsidian';
 
 function addFolder(parent: TFolder, name: string): TFolder {
@@ -40,13 +40,21 @@ describe('file palette picker', () => {
 	let shownPaths: string[];
 	let openedDefaultAppPaths: string[];
 	let getFirstLinkpathDest: ReturnType<typeof vi.fn>;
-	let plugin: FilePalettePlugin & { commands: { id: string; callback: () => void }[] };
+	let generateMarkdownLink: ReturnType<typeof vi.fn>;
+	let plugin: FilePalettePlugin & {
+		commands: { id: string; callback: () => void }[];
+		settingTabs: { display: () => void }[];
+		data: unknown;
+	};
 
 	beforeEach(async () => {
 		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
 		SuggestModal.instances.length = 0;
+		Setting.instances.length = 0;
 		Notice.messages.length = 0;
 		Platform.isMobile = false;
+		Platform.isMacOS = false;
 		root = new TFolder('', '');
 		currentFolder = addFolder(root, 'current');
 		rootFile = addFile(root, 'Root note.md');
@@ -67,6 +75,7 @@ describe('file palette picker', () => {
 			revealedItems.push(file);
 		});
 		getFirstLinkpathDest = vi.fn((_linkpath: string, _sourcePath: string) => null as TFile | null);
+		generateMarkdownLink = vi.fn((file: TFile, _sourcePath: string) => `[[${file.basename}]]`);
 		workspace = {
 			getActiveFile: () => ({ parent: currentFolder, path: 'current/source.md' }),
 			activeEditor: undefined,
@@ -86,11 +95,18 @@ describe('file palette picker', () => {
 			},
 			workspace,
 			metadataCache: { getFirstLinkpathDest },
+			fileManager: { generateMarkdownLink },
 		} as unknown as App;
 		plugin = new FilePalettePlugin(app, {} as never) as FilePalettePlugin & {
 			commands: { id: string; callback: () => void }[];
+			settingTabs: { display: () => void }[];
+			data: unknown;
 		};
 		await plugin.onload();
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
 	});
 
 	function runCommand(id: string): void {
@@ -124,23 +140,76 @@ describe('file palette picker', () => {
 		};
 	}
 
-	it('shows the persistent path above the input and registers the root operator hint', () => {
+	it('shows the command header, path, and concise footer hints', () => {
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
 		expect(modal).toBeDefined();
 
-		const path = modal?.modalEl.querySelector('.file-palette-current-path');
-		expect(path?.textContent).toBe('Current folder: current');
-		expect(path?.nextElementSibling).toBe(modal?.inputEl.parentElement);
-		expect(modal?.instructions).toEqual([
-			{ command: '~', purpose: 'Jump to vault root' },
-			{ command: ':', purpose: 'Show in Obsidian file navigator' },
-			{ command: '?', purpose: 'Show in System File Explorer' },
-			{ command: '*', purpose: 'Open with system default app' },
-			{ command: 'Mod+Shift+Enter', purpose: 'Open in new tab' },
-			{ command: 'Mod+Alt+Enter', purpose: 'Open in new tab group' },
-			{ command: 'Mod+Alt+Shift+Enter', purpose: 'Open in new window' },
+		const header = modal?.modalEl.querySelector('.fp-header');
+		const title = modal?.modalEl.querySelector('.fp-title');
+		const path = modal?.modalEl.querySelector('.fp-path');
+		expect(title?.textContent).toBe('File palette');
+		expect(title?.hasAttribute('hidden')).toBe(false);
+		expect(path?.textContent).toBe('/current');
+		expect(path?.getAttribute('title')).toBe('/current');
+		expect(header?.nextElementSibling).toBe(modal?.inputEl.parentElement);
+		expect(modal?.modalEl.classList.contains('file-palette-modal')).toBe(true);
+		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-actions .fp-hint') ?? [], (hint) => [
+			hint.querySelector('.fp-hint-command')?.textContent,
+			hint.querySelector('.fp-hint-purpose')?.textContent,
+		])).toEqual([
+			['~', 'Vault root'],
+			[':', 'Reveal'],
+			['?', 'Explorer'],
+			['*', 'Default app'],
+			['Ctrl+Shift+L', 'Copy link'],
 		]);
+		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
+			hint.querySelector('.fp-hint-command')?.textContent,
+			hint.querySelector('.fp-hint-purpose')?.textContent,
+		])).toEqual([
+			['Enter', 'Open'],
+			['Ctrl+Shift+↵', 'Tab'],
+			['Ctrl+Alt+↵', 'Group'],
+			['Ctrl+Alt+Shift+↵', 'Window'],
+		]);
+	});
+
+	it('uses Apple modifier-key symbols in the macOS footer', () => {
+		Platform.isMacOS = true;
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+
+		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-actions .fp-hint') ?? [], (hint) => [
+			hint.querySelector('.fp-hint-command')?.textContent,
+			hint.querySelector('.fp-hint-purpose')?.textContent,
+		])).toContainEqual(['⌘⇧L', 'Copy link']);
+		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
+			hint.querySelector('.fp-hint-command')?.textContent,
+			hint.querySelector('.fp-hint-purpose')?.textContent,
+		])).toEqual([['Enter', 'Open'], ['⌘⇧↵', 'Tab'], ['⌘⌥↵', 'Group'], ['⌘⌥⇧↵', 'Window']]);
+		expect(modal?.modalEl.querySelector('.fp-footer-openers .fp-hint-command[title]')?.getAttribute('title'))
+			.toBe('⌘⇧Return');
+	});
+
+	it('allows the command title to be hidden from plugin settings without hiding the path', async () => {
+		const settingTab = plugin.settingTabs[0];
+		settingTab.display();
+		const setting = Setting.instances.at(-1);
+		expect(setting?.name).toBe('Show command title');
+		expect(setting?.toggle?.value).toBe(true);
+		await setting?.toggle?.change(false);
+		expect(plugin.settings.showCommandTitle).toBe(false);
+		expect(plugin.data).toEqual({ showCommandTitle: false });
+
+		const reloadedPlugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
+		reloadedPlugin.data = plugin.data;
+		await reloadedPlugin.onload();
+		expect(reloadedPlugin.settings.showCommandTitle).toBe(false);
+		reloadedPlugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		expect(modal?.modalEl.querySelector('.fp-title')?.hasAttribute('hidden')).toBe(true);
+		expect(modal?.modalEl.querySelector('.fp-path')?.textContent).toBe('/current');
 	});
 
 	it('uses the vault root for tilde queries and updates the displayed path', () => {
@@ -151,8 +220,52 @@ describe('file palette picker', () => {
 		modal.inputEl.value = '~';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
-		expect(modal.modalEl.querySelector('.file-palette-current-path')?.textContent).toBe('Current folder: /');
+		expect(modal.modalEl.querySelector('.file-palette-current-path')?.textContent).toBe('/');
 		expect(modal.getSuggestions('~').some((entry) => entry.file === rootFile)).toBe(true);
+	});
+
+	it('keeps path segments in order and truncates ancestors before the current folder', () => {
+		const spacedFolder = addFolder(currentFolder, 'Folder with spaces & [special]');
+		currentFolder = addFolder(spacedFolder, 'Deepest');
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		const path = modal?.modalEl.querySelector<HTMLElement>('.fp-path');
+		if (!modal || !path) throw new Error('Expected the picker path header');
+
+		expect(path.textContent).toBe('/current/Folder with spaces & [special]/Deepest');
+		expect(path.getAttribute('title')).toBe('/current/Folder with spaces & [special]/Deepest');
+		expect(Array.from(path.querySelectorAll('.fp-path-parent'), (segment) => segment.textContent))
+			.toEqual(['current', 'Folder with spaces & [special]']);
+		expect(path.querySelector('.fp-path-current')?.textContent).toBe('Deepest');
+
+		Object.defineProperty(path, 'clientWidth', { configurable: true, value: 80 });
+		Object.defineProperty(path, 'scrollWidth', {
+			configurable: true,
+			get: () => {
+				const visibleSegments = path.querySelectorAll('.fp-path-segment:not(.fp-path-hidden)').length;
+				return visibleSegments === 3 ? 200 : visibleSegments === 2 ? 120 : 40;
+			},
+		});
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(path.querySelector('.fp-path-ellipsis')?.textContent).toBe('…');
+		expect(Array.from(path.querySelectorAll('.fp-path-segment:not(.fp-path-hidden)'), (segment) => segment.textContent))
+			.toEqual(['Deepest']);
+		expect(path.querySelectorAll('.fp-path-segment.fp-path-hidden')).toHaveLength(2);
+		expect(path.getAttribute('title')).toBe('/current/Folder with spaces & [special]/Deepest');
+	});
+
+	it('treats a slash query as the vault root and displays a single root slash', () => {
+		root.path = '/';
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the picker modal to open');
+
+		modal.inputEl.value = '/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(modal.modalEl.querySelector('.file-palette-current-path')?.textContent).toBe('/');
+		expect(modal.getSuggestions('/').some((entry) => entry.file === rootFile)).toBe(true);
 	});
 
 	it('resolves slash-separated folder queries relative to the starting folder', () => {
@@ -194,6 +307,28 @@ describe('file palette picker', () => {
 		const stylesheet = readFileSync(resolve(process.cwd(), 'styles.css'), 'utf8');
 		const rowStyles = stylesheet.match(/\.file-palette-suggestion\s*\{([^}]+)\}/)?.[1];
 		expect(rowStyles).toContain('padding-block: var(--size-4-1)');
+	});
+
+	it('styles path truncation and lets compact footer hints wrap instead of scrolling', () => {
+		const stylesheet = readFileSync(resolve(process.cwd(), 'styles.css'), 'utf8');
+		const titleStyles = stylesheet.match(/\.fp-title\s*\{([^}]+)\}/)?.[1];
+		const pathStyles = stylesheet.match(/\.fp-path\s*\{([^}]+)\}/)?.[1];
+		const hiddenPathStyles = stylesheet.match(/\.fp-path-hidden\s*\{([^}]+)\}/)?.[1];
+		const ellipsisStyles = stylesheet.match(/\.fp-path-ellipsis\s*\{([^}]+)\}/)?.[1];
+		const footerStyles = stylesheet.match(
+			/\.fp-footer-shortcuts,\s*\.fp-footer-actions,\s*\.fp-footer-openers\s*\{([^}]+)\}/,
+		)?.[1];
+		const hintStyles = stylesheet.match(/\.fp-hint\s*\{([^}]+)\}/)?.[1];
+
+		expect(titleStyles).toContain('color: var(--text-accent)');
+		expect(titleStyles).toContain('font-size: var(--font-ui-small)');
+		expect(pathStyles).toContain('font-size: var(--font-ui-small)');
+		expect(pathStyles).toContain('overflow: hidden');
+		expect(hiddenPathStyles).toContain('display: none');
+		expect(ellipsisStyles).toContain('color: var(--text-faint)');
+		expect(footerStyles).toContain('flex-wrap: wrap');
+		expect(hintStyles).toContain('overflow-wrap: anywhere');
+		expect(stylesheet).not.toContain('overflow-x: auto');
 	});
 
 	it('removes the path display when the modal closes', () => {
@@ -239,6 +374,70 @@ describe('file palette picker', () => {
 		expect(openedFiles).toHaveLength(0);
 	});
 
+	it('copies the highlighted file link in the vault-configured format with Ctrl+Shift+L', async () => {
+		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
+		generateMarkdownLink.mockReturnValue('[Root note](Root%20note.md)');
+		const modal = highlightEntry(rootFile, '~/Root');
+		const event = new KeyboardEvent('keydown', {
+			key: 'L',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith('[Root note](Root%20note.md)'));
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(generateMarkdownLink).toHaveBeenCalledWith(rootFile, 'current/source.md');
+		expect(Notice.messages).toEqual(['Link copied to clipboard.']);
+		expect(modal.modalEl.querySelector('.fp-path')).not.toBeNull();
+	});
+
+	it('does not consume L while the user is typing a search', () => {
+		const modal = highlightEntry(rootFile, '~/Root');
+		const event = new KeyboardEvent('keydown', { key: 'l', bubbles: true, cancelable: true });
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(false);
+		expect(generateMarkdownLink).not.toHaveBeenCalled();
+	});
+
+	it('reports clipboard failures when copying a highlighted link', async () => {
+		vi.stubGlobal('navigator', {
+			clipboard: { writeText: vi.fn().mockRejectedValue(new Error('Permission denied')) },
+		});
+		const modal = highlightEntry(rootFile, '~/Root');
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+			key: 'l',
+			metaKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		}));
+
+		await vi.waitFor(() => expect(Notice.messages).toEqual(['Could not copy link: Permission denied']));
+	});
+
+	it('does not copy links for folders', async () => {
+		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
+		const modal = highlightEntry(nestedFolder);
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+			key: 'l',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		}));
+
+		await vi.waitFor(() => expect(Notice.messages).toEqual(['Select a file to copy its link.']));
+		expect(clipboardWrite).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		{ label: 'Ctrl+Shift+Enter', options: { ctrlKey: true, shiftKey: true }, destination: 'tab' },
 		{ label: 'Meta+Shift+Enter', options: { metaKey: true, shiftKey: true }, destination: 'tab' },
@@ -278,7 +477,7 @@ describe('file palette picker', () => {
 		Platform.isMobile = true;
 		const modal = highlightEntry(rootFile, '~/Root');
 
-		expect(modal.instructions.some(({ purpose }) => purpose === 'Open in new window')).toBe(false);
+		expect(modal.modalEl.querySelector('.fp-footer-openers')?.textContent).not.toContain('Window');
 		modal.inputEl.dispatchEvent(
 			new KeyboardEvent('keydown', {
 				key: 'Enter',

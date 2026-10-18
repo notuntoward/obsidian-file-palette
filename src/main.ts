@@ -1,4 +1,27 @@
-import { App, Editor, Notice, Platform, Plugin, prepareFuzzySearch, SuggestModal, TAbstractFile, TFile, TFolder } from 'obsidian';
+import {
+	App,
+	Editor,
+	Notice,
+	Platform,
+	Plugin,
+	PluginSettingTab,
+	prepareFuzzySearch,
+	Setting,
+	SuggestModal,
+	TAbstractFile,
+	TFile,
+	TFolder,
+} from 'obsidian';
+
+const FILE_PALETTE_TITLE = 'File palette';
+
+interface FilePaletteSettings {
+	showCommandTitle: boolean;
+}
+
+const DEFAULT_SETTINGS: FilePaletteSettings = {
+	showCommandTitle: true,
+};
 
 interface VaultEntry {
 	file: TAbstractFile | null;
@@ -18,6 +41,10 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private readonly parentEntry: VaultEntry = { file: null, isParent: true };
 	private readonly entryBySuggestion = new WeakMap<HTMLElement, VaultEntry>();
 	private pathEl: HTMLDivElement | null = null;
+	private pathEllipsisEl: HTMLSpanElement | null = null;
+	private pathSegments: HTMLSpanElement[] = [];
+	private pathSegmentSeparators: HTMLSpanElement[] = [];
+	private pathResizeObserver: ResizeObserver | null = null;
 	private readonly onInput = (): void => {
 		if (this.inputEl.value.startsWith('~')) {
 			this.currentFolder = this.app.vault.getRoot();
@@ -44,6 +71,12 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
+		if (event.key.toLowerCase() === 'l' && (event.ctrlKey || event.metaKey) && event.shiftKey) {
+			event.preventDefault();
+			void this.copySelectedLink();
+			return;
+		}
+
 		if (event.key === 'Backspace' && this.inputEl.value === '' && this.currentFolder.parent) {
 			event.preventDefault();
 			this.navigateToFolder(this.currentFolder.parent);
@@ -54,6 +87,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		app: App,
 		private currentFolder: TFolder,
 		private readonly initialQuery = '',
+		private readonly showCommandTitle = true,
 	) {
 		super(app);
 		this.setPlaceholder('Search this folder; select a folder to open it');
@@ -119,21 +153,24 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 	onOpen(): void {
 		super.onOpen();
-		this.setTitle('Find file');
-		this.pathEl = this.inputEl.parentElement?.createDiv({ cls: 'file-palette-current-path' }) ?? null;
-		if (this.pathEl) this.inputEl.parentElement?.before(this.pathEl);
+		this.modalEl.addClass('file-palette-modal');
+		this.setTitle(this.showCommandTitle ? FILE_PALETTE_TITLE : '');
+		const inputContainer = this.inputEl.parentElement;
+		if (inputContainer) {
+			const header = this.modalEl.createDiv({ cls: 'fp-header' });
+			const title = header.createDiv({ cls: 'fp-title' });
+			title.setText(FILE_PALETTE_TITLE);
+			title.hidden = !this.showCommandTitle;
+			this.pathEl = header.createDiv({ cls: 'fp-path file-palette-current-path' });
+			this.pathEl.setAttribute('aria-label', 'Current folder path');
+			inputContainer.before(header);
+		}
 		this.updateCurrentPathDisplay();
-		this.setInstructions([
-			{ command: '~', purpose: 'Jump to vault root' },
-			{ command: ':', purpose: 'Show in Obsidian file navigator' },
-			{ command: '?', purpose: 'Show in System File Explorer' },
-			{ command: '*', purpose: 'Open with system default app' },
-			{ command: 'Mod+Shift+Enter', purpose: 'Open in new tab' },
-			{ command: 'Mod+Alt+Enter', purpose: 'Open in new tab group' },
-			...(!Platform.isMobile
-				? [{ command: 'Mod+Alt+Shift+Enter', purpose: 'Open in new window' }]
-				: []),
-		]);
+		if (this.pathEl && typeof ResizeObserver !== 'undefined') {
+			this.pathResizeObserver = new ResizeObserver(() => this.updatePathTruncation());
+			this.pathResizeObserver.observe(this.pathEl);
+		}
+		this.renderFooter();
 
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
 		this.inputEl.addEventListener('input', this.onInput);
@@ -145,9 +182,70 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	onClose(): void {
 		this.inputEl.removeEventListener('keydown', this.onInputKeydown);
 		this.inputEl.removeEventListener('input', this.onInput);
-		this.pathEl?.remove();
+		this.pathResizeObserver?.disconnect();
+		this.pathResizeObserver = null;
+		this.modalEl.querySelector('.fp-header')?.remove();
+		this.modalEl.querySelector('.fp-footer')?.remove();
 		this.pathEl = null;
+		this.pathEllipsisEl = null;
+		this.pathSegments = [];
+		this.pathSegmentSeparators = [];
 		this.contentEl.empty();
+	}
+
+	private renderFooter(): void {
+		const footer = this.modalEl.createDiv({ cls: 'fp-footer' });
+		footer.setAttribute('aria-label', 'Keyboard shortcuts');
+		const modifier = Platform.isMacOS ? '⌘' : 'Ctrl+';
+		const shift = Platform.isMacOS ? '⇧' : 'Shift+';
+		const alternate = Platform.isMacOS ? '⌥' : 'Alt+';
+		const shortcuts = footer.createDiv({ cls: 'fp-footer-shortcuts' });
+		const actions = shortcuts.createDiv({ cls: 'fp-footer-actions' });
+		this.renderHint(actions, '~', 'Vault root');
+		this.renderHint(actions, ':', 'Reveal');
+		this.renderHint(actions, '?', 'Explorer');
+		this.renderHint(actions, '*', 'Default app');
+		this.renderHint(actions, `${modifier}${shift}L`, 'Copy link');
+
+		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
+		this.renderHint(openers, 'Enter', 'Open');
+		this.renderHint(openers, `${modifier}${shift}↵`, 'Tab');
+		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group');
+		if (!Platform.isMobile) this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window');
+	}
+
+	private renderHint(container: HTMLElement, command: string, purpose: string): void {
+		const hint = container.createDiv({ cls: 'fp-hint' });
+		const key = hint.createSpan({ cls: 'fp-hint-command' });
+		key.setText(command);
+		if (command.includes('↵')) {
+			key.setAttribute('title', command.replace('↵', Platform.isMacOS ? 'Return' : 'Enter'));
+		}
+		hint.createSpan({ cls: 'fp-hint-purpose' }).setText(purpose);
+	}
+
+	private async copySelectedLink(): Promise<void> {
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		if (!entry?.file) return;
+		if (!(entry.file instanceof TFile)) {
+			new Notice('Select a file to copy its link.');
+			return;
+		}
+		if (!navigator.clipboard?.writeText) {
+			new Notice('Copying links is not available on this device.');
+			return;
+		}
+
+		try {
+			const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
+			const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
+			await navigator.clipboard.writeText(link);
+			new Notice('Link copied to clipboard.');
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not copy link: ${reason}`);
+		}
 	}
 
 	private openInDestination(file: TFile, destination: 'tab' | 'split' | 'window'): void {
@@ -227,13 +325,64 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private updateCurrentPathDisplay(): void {
 		if (!this.pathEl) return;
 		const folder = this.getQueryFolder(this.inputEl.value)?.folder ?? this.currentFolder;
-		this.pathEl.setText(`Current folder: ${folder.path || '/'}`);
+		const segments = folder.path.split('/').filter(Boolean);
+		const fullPath = segments.length ? `/${segments.join('/')}` : '/';
+		this.pathEl.empty();
+		this.pathEl.setAttribute('title', fullPath);
+		this.pathEllipsisEl = null;
+		this.pathSegments = [];
+		this.pathSegmentSeparators = [];
+
+		if (!segments.length) {
+			this.pathEl.createSpan({ cls: 'fp-path-current' }).setText('/');
+			return;
+		}
+
+		this.pathEllipsisEl = this.pathEl.createSpan({ cls: 'fp-path-ellipsis' });
+		this.createPathSeparator();
+		for (let index = 0; index < segments.length; index++) {
+			const segment = this.pathEl.createSpan({
+				cls: index === segments.length - 1 ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
+			});
+			segment.setText(segments[index]);
+			this.pathSegments.push(segment);
+			if (index < segments.length - 1) {
+				this.pathSegmentSeparators.push(this.createPathSeparator());
+			}
+		}
+		this.updatePathTruncation();
+	}
+
+	private createPathSeparator(): HTMLSpanElement {
+		const separator = this.pathEl?.createSpan({ cls: 'fp-path-separator' });
+		separator?.setText('/');
+		separator?.setAttribute('aria-hidden', 'true');
+		if (!separator) throw new Error('Could not create a folder path separator');
+		return separator;
+	}
+
+	private updatePathTruncation(): void {
+		if (!this.pathEl || !this.pathEllipsisEl) return;
+		this.pathSegments.forEach((segment) => segment.classList.remove('fp-path-hidden'));
+		this.pathSegmentSeparators.forEach((separator) => separator.classList.remove('fp-path-hidden'));
+		this.pathEllipsisEl.setText('');
+
+		let firstVisibleSegment = 0;
+		while (
+			this.pathEl.scrollWidth > this.pathEl.clientWidth &&
+			firstVisibleSegment < this.pathSegments.length - 1
+		) {
+			this.pathSegments[firstVisibleSegment].classList.add('fp-path-hidden');
+			this.pathSegmentSeparators[firstVisibleSegment]?.classList.add('fp-path-hidden');
+			this.pathEllipsisEl.setText('…');
+			firstVisibleSegment++;
+		}
 	}
 
 	private navigateToFolder(folder: TFolder): void {
 		this.close();
 		window.setTimeout(() => {
-			new VaultPathSuggestModal(this.app, folder).open();
+			new VaultPathSuggestModal(this.app, folder, '', this.showCommandTitle).open();
 		}, 0);
 	}
 
@@ -266,13 +415,17 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 }
 
 export default class FilePalettePlugin extends Plugin {
+	settings: FilePaletteSettings = { ...DEFAULT_SETTINGS };
+
 	async onload(): Promise<void> {
+		await this.loadSettings();
+		this.addSettingTab(new FilePaletteSettingTab(this.app, this));
 		this.addCommand({
 			id: 'open-palette',
 			// eslint-disable-next-line obsidianmd/commands/no-plugin-name-in-command-name -- Keep the explicit label requested for discoverability.
 			name: 'Open file palette',
 			callback: () => {
-				new VaultPathSuggestModal(this.app, this.getActiveFolder()).open();
+				new VaultPathSuggestModal(this.app, this.getActiveFolder(), '', this.settings.showCommandTitle).open();
 			},
 		});
 		this.addCommand({
@@ -288,9 +441,25 @@ export default class FilePalettePlugin extends Plugin {
 					return;
 				}
 
-				new VaultPathSuggestModal(this.app, this.getActiveFolder(), guess).open();
+				new VaultPathSuggestModal(this.app, this.getActiveFolder(), guess, this.settings.showCommandTitle).open();
 			},
 		});
+	}
+
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
+	}
+
+	private async loadSettings(): Promise<void> {
+		const savedSettings: unknown = await this.loadData();
+		const showCommandTitle =
+			typeof savedSettings === 'object' &&
+			savedSettings !== null &&
+			'showCommandTitle' in savedSettings &&
+			typeof savedSettings.showCommandTitle === 'boolean'
+				? savedSettings.showCommandTitle
+				: DEFAULT_SETTINGS.showCommandTitle;
+		this.settings = { showCommandTitle };
 	}
 
 	private getActiveFolder(): TFolder {
@@ -343,5 +512,32 @@ export default class FilePalettePlugin extends Plugin {
 
 		const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
 		return this.app.metadataCache.getFirstLinkpathDest(guess, sourcePath);
+	}
+}
+
+class FilePaletteSettingTab extends PluginSettingTab {
+	constructor(app: App, private readonly plugin: FilePalettePlugin) {
+		super(app, plugin);
+	}
+
+	display(): void {
+		this.containerEl.empty();
+		new Setting(this.containerEl)
+			.setName('Show command title')
+			.setDesc('Show “File palette” above the current folder path in the file picker.')
+			.addToggle((toggle) => {
+				toggle.setValue(this.plugin.settings.showCommandTitle);
+				toggle.onChange(async (value) => {
+					this.plugin.settings.showCommandTitle = value;
+					try {
+						await this.plugin.saveSettings();
+					} catch (error) {
+						this.plugin.settings.showCommandTitle = !value;
+						toggle.setValue(!value);
+						const reason = error instanceof Error ? error.message : String(error);
+						new Notice(`Could not save file palette settings: ${reason}`);
+					}
+				});
+			});
 	}
 }

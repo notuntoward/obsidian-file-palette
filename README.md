@@ -43,15 +43,21 @@ before falling back to the same picker.
 The picker fuzzy-matches the current folder's children. Select a folder to
 browse into it, select `.. (parent folder)` or press Backspace on an empty
 search to go up, and enter slash-separated paths to navigate through folders.
-The current folder path stays displayed at the top of the palette. Type `~` at
-the start of a query to switch to the vault root; the operator hint appears in
-the palette's instruction footer. Use Up/Down to highlight a suggestion and
-Enter to open a file or browse into a folder. To act on the highlighted file or
-folder, type `:` to reveal it in Obsidian's file navigator or `?` to show it in
-the system file explorer. Type `*` to open it with the system default app. The
-system file explorer and default app actions depend on platform support. These
-operator characters cannot appear in filenames on Windows. The picker includes
-every file type; Markdown extensions are omitted from names, while other file
+The current folder path stays displayed at the top of the palette, below the
+accent-colored `File palette` title. The title can be hidden with the
+`Show command title` setting; the path remains visible. Long paths retain their
+deepest folders and show the full path on hover. Start a query with `/` or `~`
+to switch to the vault root. Use Up/Down to highlight a suggestion and Enter to
+open a file or browse into a folder. Footer hints wrap to fit the modal and
+show `⌘`/`⇧`/`⌥` on macOS or `Ctrl`/`Shift`/`Alt` on Windows and Linux. To act
+on the highlighted file or folder, type `:` to reveal it in Obsidian's file
+navigator or `?` to show it in the system file explorer. Type `*` to open it
+with the system default app. Press `Ctrl+Shift+L` (Windows/Linux) or
+`Cmd+Shift+L` (macOS) to copy an Obsidian link to a highlighted file, using
+the vault's configured link format. The system file
+explorer and default app actions depend on platform support. These operator
+characters cannot appear in filenames on Windows. The picker includes every
+file type; Markdown extensions are omitted from names, while other file
 extensions appear as right-aligned hints.
 
 For a highlighted file, use the Obsidian tab shortcuts: `Ctrl+Shift+Enter` on

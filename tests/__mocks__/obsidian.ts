@@ -6,6 +6,8 @@ export class Plugin {
 	app: any;
 	manifest: any;
 	commands: any[] = [];
+	settingTabs: any[] = [];
+	data: unknown = null;
 
 	constructor(app: any, manifest: any) {
 		this.app = app;
@@ -18,7 +20,15 @@ export class Plugin {
 		this.commands.push(command);
 		return command;
 	}
-	addSettingTab(_tab: any): void {}
+	addSettingTab(tab: any): void {
+		this.settingTabs.push(tab);
+	}
+	async loadData(): Promise<unknown> {
+		return this.data;
+	}
+	async saveData(data: unknown): Promise<void> {
+		this.data = data;
+	}
 	registerEvent(_event: any): void {}
 	registerDomEvent(_el: any, _type: string, _callback: any): void {}
 	registerInterval(_id: number): number {
@@ -34,6 +44,8 @@ export class PluginSettingTab {
 	constructor(app: any, plugin: any) {
 		this.app = app;
 		this.plugin = plugin;
+		installDomHelpers();
+		this.containerEl = document.createElement('div');
 	}
 
 	display(): void {}
@@ -41,14 +53,24 @@ export class PluginSettingTab {
 }
 
 export class Setting {
+	static instances: Setting[] = [];
 	containerEl: any;
 	settingEl: any;
+	name = '';
+	toggle: {
+		value: boolean;
+		setValue: (value: boolean) => void;
+		onChange: (callback: (value: boolean) => void | Promise<void>) => void;
+		change: (value: boolean) => Promise<void>;
+	} | null = null;
 
 	constructor(_containerEl: any) {
 		this.containerEl = _containerEl;
+		Setting.instances.push(this);
 	}
 
-	setName(_name: string): this {
+	setName(name: string): this {
+		this.name = name;
 		return this;
 	}
 	setDesc(_desc: string): this {
@@ -57,7 +79,23 @@ export class Setting {
 	addText(_cb: (text: any) => any): this {
 		return this;
 	}
-	addToggle(_cb: (toggle: any) => any): this {
+	addToggle(cb: (toggle: any) => any): this {
+		const toggle = {
+			value: false,
+			callback: (_value: boolean): void | Promise<void> => {},
+			setValue(value: boolean): void {
+				this.value = value;
+			},
+			onChange(callback: (value: boolean) => void | Promise<void>): void {
+				this.callback = callback;
+			},
+			async change(value: boolean): Promise<void> {
+				this.value = value;
+				await this.callback(value);
+			},
+		};
+		this.toggle = toggle;
+		cb(toggle);
 		return this;
 	}
 	addButton(_cb: (button: any) => any): this {
@@ -77,7 +115,7 @@ export class Notice {
 	hide(): void {}
 }
 
-export const Platform = { isMobile: false };
+export const Platform = { isMobile: false, isMacOS: false };
 
 export class Modal {
 	app: any;

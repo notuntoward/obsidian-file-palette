@@ -2,7 +2,7 @@
 	"id": "file-palette",
 	"name": "File Palette",
 	"version": "0.1.0",
-	"minAppVersion": "1.9.0",
+	"minAppVersion": "1.14.0",
 	"description": "Palette picker for files and folders in Obsidian.",
 	"author": "Scott Otterson",
 	"authorUrl": "https://github.com/notuntoward",
