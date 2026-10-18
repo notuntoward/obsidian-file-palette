@@ -38,6 +38,25 @@ function normalizeSearchProperties(value: unknown): string[] {
 		.filter(Boolean))];
 }
 
+function mergeRanges(ranges: [number, number][]): [number, number][] {
+	const sorted = [...ranges].sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+	const merged: [number, number][] = [];
+	for (const range of sorted) {
+		const last = merged[merged.length - 1];
+		if (last && range[0] <= last[1]) {
+			last[1] = Math.max(last[1], range[1]);
+		} else {
+			merged.push([...range]);
+		}
+	}
+	return merged;
+}
+
+interface RawProperty {
+	property: string;
+	value: string;
+}
+
 interface VaultEntry {
 	file: TAbstractFile | null;
 	isParent: boolean;
@@ -121,30 +140,102 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const location = this.getQueryFolder(query);
 		if (!location) return [];
 		const { folder, name } = location;
-		const search = prepareFuzzySearch(name);
+		const words = name.trim().split(/\s+/).filter(Boolean);
+		const searchers = words.map((word) => prepareFuzzySearch(word));
+
 		const entries = folder.children.flatMap((file) => {
-			const nameMatch = name ? search(file.name) : null;
-			const propertyValues = file instanceof TFile && (name || this.showPropertyMatches)
-				? this.getPropertyValues(file, name ? search : () => null)
-				: [];
-			const propertyMatch = propertyValues.reduce<SearchResult | null>(
-				(best, value) => value.match && (!best || value.match.score > best.score) ? value.match : best,
-				null,
-			);
-			if (name && !nameMatch && !propertyMatch) return [];
+			const rawProperties = file instanceof TFile ? this.getRawProperties(file) : [];
+
+			if (!searchers.length) {
+				const propertyValues = file instanceof TFile && this.showPropertyMatches
+					? rawProperties.map(({ property, value }) => ({ property, value, match: null }))
+					: undefined;
+				return [{
+					entry: {
+						file,
+						isParent: false,
+						propertyValues,
+					},
+					matchCount: 0,
+					score: 0,
+					nameScore: 0,
+				}];
+			}
+
+			const propertyHits = rawProperties.map(() => ({
+				matches: [] as [number, number][],
+				scores: [] as number[],
+			}));
+			const nameHits: { matches: [number, number][]; scores: number[] } = {
+				matches: [],
+				scores: [],
+			};
+
+			let totalScore = 0;
+
+			for (const search of searchers) {
+				const nameMatch = search(file.name);
+				if (nameMatch) {
+					nameHits.matches.push(...((nameMatch.matches as [number, number][] | undefined) ?? []));
+					nameHits.scores.push(nameMatch.score);
+				}
+
+				let wordBestScore = nameMatch?.score ?? Number.NEGATIVE_INFINITY;
+				let wordMatchedProperty = false;
+
+				for (let index = 0; index < rawProperties.length; index++) {
+					const propertyMatch = search(rawProperties[index].value);
+					if (propertyMatch) {
+						wordMatchedProperty = true;
+						propertyHits[index].matches.push(...((propertyMatch.matches as [number, number][] | undefined) ?? []));
+						propertyHits[index].scores.push(propertyMatch.score);
+						if (propertyMatch.score > wordBestScore) {
+							wordBestScore = propertyMatch.score;
+						}
+					}
+				}
+
+				if (!nameMatch && !wordMatchedProperty) {
+					return [];
+				}
+
+				totalScore += wordBestScore;
+			}
+
+			const nameMatched = nameHits.scores.length > 0;
+			const propertyMatched = propertyHits.some((hit) => hit.scores.length > 0);
+			const matchCount = Number(nameMatched) + Number(propertyMatched);
+			const nameScore = nameHits.scores.reduce((sum, score) => sum + score, 0);
+
+			const propertyValues: PropertyMatch[] | undefined = this.showPropertyMatches
+				? rawProperties.map((raw, index) => {
+					const hits = propertyHits[index];
+					const match: SearchResult | null = hits.scores.length
+						? {
+							score: hits.scores.reduce((sum, score) => sum + score, 0),
+							matches: mergeRanges(hits.matches),
+						}
+						: null;
+					return {
+						property: raw.property,
+						value: raw.value,
+						match,
+					};
+				})
+				: undefined;
+
 			return [{
 				entry: {
 					file,
 					isParent: false,
-					propertyValues: this.showPropertyMatches ? propertyValues : undefined,
+					propertyValues,
 				},
-				matchCount: Number(Boolean(nameMatch)) + Number(Boolean(propertyMatch)),
-				score: name
-					? Math.max(nameMatch?.score ?? Number.NEGATIVE_INFINITY, propertyMatch?.score ?? Number.NEGATIVE_INFINITY)
-					: 0,
-				nameScore: nameMatch?.score ?? 0,
+				matchCount,
+				score: totalScore,
+				nameScore,
 			}];
 		});
+
 		entries.sort((left, right) =>
 			right.matchCount - left.matchCount ||
 			right.score - left.score ||
@@ -152,7 +243,7 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		);
 		const suggestions: VaultEntry[] = entries.map(({ entry }) => entry);
 
-		if (folder.parent && (!name || prepareFuzzySearch(name)('..'))) {
+		if (folder.parent && (!words.length || words.every((word) => prepareFuzzySearch(word)('..')))) {
 			suggestions.unshift(this.parentEntry);
 		}
 
@@ -453,14 +544,14 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}, 0);
 	}
 
-	private getPropertyValues(file: TFile, search: (text: string) => SearchResult | null): PropertyMatch[] {
+	private getRawProperties(file: TFile): RawProperty[] {
 		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
 		if (!frontmatter) return [];
-		const propertyValues: PropertyMatch[] = [];
+		const propertyValues: RawProperty[] = [];
 		for (const property of this.searchProperties) {
 			const value: unknown = frontmatter[property];
 			if (typeof value !== 'string') continue;
-			propertyValues.push({ property, value, match: search(value) });
+			propertyValues.push({ property, value });
 		}
 		return propertyValues;
 	}

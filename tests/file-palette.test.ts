@@ -329,6 +329,82 @@ describe('file palette picker', () => {
 		expect(element.querySelector('.file-palette-suggestion-properties')).toBeNull();
 	});
 
+	it('matches orderless search terms across filename and properties', async () => {
+		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
+		const settingTab = plugin.settingTabs[0];
+		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		const setting = new Setting(document.createElement('div'));
+		definition?.render?.(setting, {} as never);
+		await setting?.text?.change('title, fake-property');
+
+		const steadyLinks = addFile(currentFolder, 'Steady Links Plugin.md');
+		metadataByFile.set(steadyLinks, {
+			frontmatter: {
+				title: 'steady title',
+				'fake-property': 'steady but fake',
+			},
+		});
+
+		const filePalette = addFile(currentFolder, 'File Palette Plugin.md');
+		metadataByFile.set(filePalette, {
+			frontmatter: {
+				title: 'steady title',
+				'fake-property': 'fake but steady',
+			},
+		});
+
+		const otherPlugin = addFile(currentFolder, 'My Plugin Ideas for Obsidian and Others.md');
+		metadataByFile.set(otherPlugin, {
+			frontmatter: {
+				title: 'A fake title',
+			},
+		});
+
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+
+		const forwardSuggestions = modal.getSuggestions('fake steady');
+		const forwardFiles = forwardSuggestions.map(({ file }) => file);
+		expect(forwardFiles).toContain(steadyLinks);
+		expect(forwardFiles).toContain(filePalette);
+		expect(forwardFiles).not.toContain(otherPlugin);
+
+		const reverseSuggestions = modal.getSuggestions('steady fake');
+		const reverseFiles = reverseSuggestions.map(({ file }) => file);
+		expect(reverseFiles).toContain(steadyLinks);
+		expect(reverseFiles).toContain(filePalette);
+		expect(reverseFiles).not.toContain(otherPlugin);
+	});
+
+	it('merges highlight ranges when multiple search terms hit the same property in any order', async () => {
+		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
+		const settingTab = plugin.settingTabs[0];
+		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		const setting = new Setting(document.createElement('div'));
+		definition?.render?.(setting, {} as never);
+		await setting?.text?.change('title, fake-property');
+
+		const steadyLinks = addFile(currentFolder, 'Steady Links Plugin.md');
+		metadataByFile.set(steadyLinks, {
+			frontmatter: {
+				'fake-property': 'steady but fake',
+			},
+		});
+
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+
+		const entry = modal.getSuggestions('fake steady').find(({ file }) => file === steadyLinks);
+		if (!entry) throw new Error('Expected steadyLinks suggestion');
+		const element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+
+		const highlights = Array.from(element.querySelectorAll('.suggestion-highlight'), (el) => el.textContent);
+		expect(highlights).toEqual(['steady', 'fake']);
+	});
+
 	it('uses the vault root for tilde queries and updates the displayed path', () => {
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
