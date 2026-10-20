@@ -153,3 +153,19 @@
 	color: var(--text-faint);
 	font-size: var(--font-ui-smaller);
 }
+
+.fp-property-disabled {
+	color: var(--text-faint);
+	text-decoration: line-through;
+	cursor: not-allowed;
+	opacity: 0.6;
+}
+
+.fp-property-unsupported {
+	margin-inline-start: var(--size-4-1);
+	color: var(--text-error, var(--text-muted));
+	font-size: var(--font-ui-smaller);
+	font-style: italic;
+	text-decoration: none;
+}
+

@@ -246,8 +246,24 @@ export class AbstractInputSuggest<T> {
 		return this.getSuggestions(query);
 	}
 
-	select(value: T): void {
-		this.selectCallback?.(value, new KeyboardEvent('keydown'));
+	renderSuggestion(_value: T, _element: HTMLElement): void {}
+
+	selectSuggestion(value: T, evt: MouseEvent | KeyboardEvent): void {
+		this.selectCallback?.(value, evt);
+	}
+
+	select(value: T | string): void {
+		if (typeof value === 'string') {
+			const suggestions = this.suggestions();
+			const matched = suggestions.find((item: any) =>
+				item === value || (typeof item === 'object' && item !== null && item.property === value)
+			);
+			if (matched) {
+				this.selectSuggestion(matched as T, new KeyboardEvent('keydown'));
+				return;
+			}
+		}
+		this.selectSuggestion(value as T, new KeyboardEvent('keydown'));
 	}
 
 	close(): void {}
@@ -275,6 +291,14 @@ export class TFile extends TAbstractFile {
 		this.basename = extensionIndex < 0 ? name : name.slice(0, extensionIndex);
 		this.extension = extensionIndex < 0 ? '' : name.slice(extensionIndex + 1);
 	}
+}
+
+export function normalizePath(path: string): string {
+	return path
+		.replace(/\\/g, '/')
+		.replace(/\/+/g, '/')
+		.replace(/^\/+/, '')
+		.replace(/\/+$/, '');
 }
 
 export function prepareFuzzySearch(query: string): (text: string) => { score: number } | null {

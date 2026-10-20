@@ -3,7 +3,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import FilePalettePlugin from '../src/main';
+import FilePalettePlugin, {
+	alignFuzzyRanges,
+	classifyLiteral,
+	compareWordMatches,
+	MatchQuality,
+	tokenize,
+} from '../src/main';
 import * as ObsidianMock from './__mocks__/obsidian';
 import {
 	AbstractInputSuggest,
@@ -92,10 +98,46 @@ describe('file palette picker', () => {
 			getLeaf,
 			getLeavesOfType: () => [{ view: { revealInFolder } }],
 		};
+		function getAbstractFileByPath(targetPath: string): TAbstractFile | null {
+			const normalized = targetPath
+				.replace(/\\/g, '/')
+				.replace(/\/+/g, '/')
+				.replace(/^\/+/, '')
+				.replace(/\/+$/, '');
+			if (!normalized) return root;
+			const segments = normalized.split('/').filter(Boolean);
+			let current: TAbstractFile = root;
+			for (const segment of segments) {
+				if (!(current instanceof TFolder)) return null;
+				const child: TAbstractFile | undefined = current.children.find((c) => c.name === segment);
+				if (!child) return null;
+				current = child;
+			}
+			return current;
+		}
+
+		const vaultCreate = vi.fn(async (path: string, _data: string) => {
+			const normalized = path
+				.replace(/\\/g, '/')
+				.replace(/\/+/g, '/')
+				.replace(/^\/+/, '')
+				.replace(/\/+$/, '');
+			const slash = normalized.lastIndexOf('/');
+			const parentPath = slash >= 0 ? normalized.slice(0, slash) : '';
+			const name = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+			const parent = parentPath ? getAbstractFileByPath(parentPath) : root;
+			if (!(parent instanceof TFolder)) {
+				throw new Error(`Parent folder "${parentPath}" not found`);
+			}
+			return addFile(parent, name);
+		});
+
 		app = {
 			vault: {
 				getRoot: () => root,
 				getMarkdownFiles: () => [...metadataByFile.keys()],
+				getAbstractFileByPath,
+				create: vaultCreate,
 			},
 			showInFolder: (path: string) => {
 				shownPaths.push(path);
@@ -167,7 +209,8 @@ describe('file palette picker', () => {
 			hint.querySelector('.fp-hint-command')?.textContent,
 			hint.querySelector('.fp-hint-purpose')?.textContent,
 		])).toEqual([
-			['Enter', 'Open'],
+			['↵', 'Open'],
+			['Shift+↵', 'Create'],
 			['Ctrl+Shift+↵', 'New tab'],
 			['Ctrl+Alt+↵', 'Group'],
 			['Ctrl+Alt+Shift+↵', 'Window'],
@@ -186,9 +229,9 @@ describe('file palette picker', () => {
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
 			hint.querySelector('.fp-hint-command')?.textContent,
 			hint.querySelector('.fp-hint-purpose')?.textContent,
-		])).toEqual([['Enter', 'Open'], ['⌘⇧↵', 'New tab'], ['⌘⌥↵', 'Group'], ['⌘⌥⇧↵', 'Window']]);
+		])).toEqual([['↵', 'Open'], ['⇧↵', 'Create'], ['⌘⇧↵', 'New tab'], ['⌘⌥↵', 'Group'], ['⌘⌥⇧↵', 'Window']]);
 		expect(modal?.modalEl.querySelector('.fp-footer-openers .fp-hint-command[title]')?.getAttribute('title'))
-			.toBe('⌘⇧Return');
+			.toBe('Return');
 	});
 
 	it('allows the command title to be hidden from plugin settings without hiding the path', async () => {
@@ -215,17 +258,19 @@ describe('file palette picker', () => {
 		expect(modal?.modalEl.querySelector('.fp-path')?.textContent).toBe('/current');
 	});
 
-	it('searches configured string-valued properties and ranks files matching both name and property higher', () => {
-		const matchingBoth = addFile(currentFolder, 'query-name.md');
+	it('searches configured string-valued properties and ranks files by match quality', () => {
 		const matchingName = addFile(currentFolder, 'query-name-only.md');
+		const matchingBoth = addFile(currentFolder, 'query-name.md');
 		const matchingProperty = addFile(currentFolder, 'unrelated.md');
+		const matchingStringList = addFile(currentFolder, 'string-list.md');
 		const nonStringProperty = addFile(currentFolder, 'also-unrelated.md');
 		metadataByFile.set(matchingBoth, { frontmatter: { title: 'query title' } });
 		metadataByFile.set(matchingProperty, { frontmatter: { title: 'query title' } });
-		metadataByFile.set(nonStringProperty, { frontmatter: { title: ['query title'] } });
+		metadataByFile.set(matchingStringList, { frontmatter: { title: ['query title'] } });
+		metadataByFile.set(nonStringProperty, { frontmatter: { title: 12345 } });
 		vi.spyOn(ObsidianMock, 'prepareFuzzySearch').mockReturnValue((value) => {
-			if (value === 'query-name.md') return { score: 1, matches: [] };
-			if (value === 'query-name-only.md') return { score: 10, matches: [] };
+			if (value === 'query-name') return { score: 1, matches: [] };
+			if (value === 'query-name-only') return { score: 10, matches: [] };
 			if (value === 'query title') return { score: 4, matches: [] };
 			return null;
 		});
@@ -234,10 +279,10 @@ describe('file palette picker', () => {
 		const modal = SuggestModal.instances.at(-1);
 		const suggestions = modal?.getSuggestions('query');
 
-		expect(suggestions?.map(({ file }) => file)).toEqual([matchingBoth, matchingName, matchingProperty]);
+		expect(suggestions?.map(({ file }) => file)).toEqual([matchingName, matchingBoth, matchingStringList, matchingProperty]);
 	});
 
-	it('saves a configurable property list and completes string-valued property names', async () => {
+	it('saves a configurable property list and completes string-valued and string-list property names', async () => {
 		const settingTab = plugin.settingTabs[0];
 		const file = addFile(currentFolder, 'property-source.md');
 		metadataByFile.set(file, {
@@ -245,6 +290,7 @@ describe('file palette picker', () => {
 				title: 'A title',
 				category: 'literaturenote',
 				tags: ['one', 'two'],
+				rating: 5,
 			},
 		});
 		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
@@ -252,17 +298,34 @@ describe('file palette picker', () => {
 		const setting = new Setting(document.createElement('div'));
 		definition.render(setting, {} as never);
 		expect(setting?.text?.value).toBe('title');
-		await setting?.text?.change('title, cat');
+		await setting?.text?.change('title, ');
 		setting?.text?.inputEl.setSelectionRange(setting.text.value.length, setting.text.value.length);
 		const propertySuggest = AbstractInputSuggest.instances.at(-1);
-		expect(propertySuggest?.suggestions()).toContain('category');
-		expect(propertySuggest?.suggestions()).not.toContain('tags');
-		propertySuggest?.select('category');
-		expect(setting?.text?.inputEl.value).toBe('title, category, ');
-		expect(plugin.settings.searchProperties).toEqual(['title', 'category']);
+		const suggestions = propertySuggest?.suggestions();
+		expect(suggestions?.find((s: any) => s.property === 'category')?.isAllowed).toBe(true);
+		expect(suggestions?.find((s: any) => s.property === 'tags')?.isAllowed).toBe(true);
+		expect(suggestions?.find((s: any) => s.property === 'rating')?.isAllowed).toBe(false);
+
+		const allowedEl = document.createElement('div');
+		propertySuggest?.renderSuggestion({ property: 'tags', isAllowed: true }, allowedEl);
+		expect(allowedEl.textContent).toBe('tags');
+		expect(allowedEl.classList.contains('fp-property-disabled')).toBe(false);
+
+		const disabledEl = document.createElement('div');
+		propertySuggest?.renderSuggestion({ property: 'rating', isAllowed: false }, disabledEl);
+		expect(disabledEl.classList.contains('fp-property-disabled')).toBe(true);
+		expect(disabledEl.querySelector('.fp-property-unsupported')?.textContent).toBe(' (unsupported)');
+
+		propertySuggest?.select('rating');
+		expect(setting?.text?.inputEl.value).toBe('title, ');
+		expect(Notice.messages).toContain('Property "rating" is not a string or string list.');
+
+		propertySuggest?.select('tags');
+		expect(setting?.text?.inputEl.value).toBe('title, tags, ');
+		expect(plugin.settings.searchProperties).toEqual(['title', 'tags']);
 
 		const categoryMatch = addFile(currentFolder, 'category-match.md');
-		metadataByFile.set(categoryMatch, { frontmatter: { category: 'distinctive phrase' } });
+		metadataByFile.set(categoryMatch, { frontmatter: { tags: ['distinctive phrase', 'other'] } });
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
 		expect(modal?.getSuggestions('distinctive').some(({ file }) => file === categoryMatch)).toBe(true);
@@ -287,6 +350,29 @@ describe('file palette picker', () => {
 		expect(element.querySelector('.file-palette-suggestion-property-value')?.textContent).toBe('A unique title');
 		expect(Array.from(element.querySelectorAll('.suggestion-highlight'), (highlight) => highlight.textContent))
 			.toEqual(['unique']);
+	});
+
+	it('shows matching string property lists formatted as comma-separated values with highlights', async () => {
+		const matchingFile = addFile(currentFolder, 'TagsFile.md');
+		metadataByFile.set(matchingFile, { frontmatter: { tags: ['apple pie', 'banana bread'] } });
+		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
+		const settingTab = plugin.settingTabs[0];
+		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		const setting = new Setting(document.createElement('div'));
+		definition?.render?.(setting, {} as never);
+		await setting?.text?.change('title, tags');
+
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		const entry = modal?.getSuggestions('banana').find(({ file }) => file === matchingFile);
+		if (!modal || !entry) throw new Error('Expected the tags-matching file suggestion');
+		const element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+
+		expect(element.querySelector('.file-palette-suggestion-property-name')?.textContent).toBe('tags:');
+		expect(element.querySelector('.file-palette-suggestion-property-value')?.textContent).toBe('apple pie, banana bread');
+		expect(Array.from(element.querySelectorAll('.suggestion-highlight'), (highlight) => highlight.textContent))
+			.toEqual(['banana']);
 	});
 
 	it('does not show property details when disabled or when a file has no configured string property', async () => {
@@ -619,6 +705,200 @@ describe('file palette picker', () => {
 		expect(workspace.getLeaf).not.toHaveBeenCalled();
 	});
 
+	it('creates a new markdown file in the current folder on Shift+Enter', async () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'Brand new note';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).toHaveBeenCalledWith('current/Brand new note.md', '');
+		await vi.waitFor(() => {
+			expect(openedFiles.some((f) => f.path === 'current/Brand new note.md')).toBe(true);
+		});
+		expect(modal.modalEl.querySelector('.file-palette-current-path')).toBeNull();
+	});
+
+	it('preserves an explicit file extension on Shift+Enter', async () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'diagram.canvas';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).toHaveBeenCalledWith('current/diagram.canvas', '');
+		await vi.waitFor(() => {
+			expect(openedFiles.some((f) => f.path === 'current/diagram.canvas')).toBe(true);
+		});
+	});
+
+	it('creates a note in a subfolder or root path when specified in the query on Shift+Enter', async () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'Nested/Child note';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).toHaveBeenCalledWith('current/Nested/Child note.md', '');
+		await vi.waitFor(() => {
+			expect(openedFiles.some((f) => f.path === 'current/Nested/Child note.md')).toBe(true);
+		});
+	});
+
+	it('shows a notice and refuses to create a file when input name is empty on Shift+Enter', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = '   ';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).not.toHaveBeenCalled();
+		expect(Notice.messages).toContain('Enter a file name to create a note.');
+	});
+
+	it('shows a notice and refuses to create a file with invalid characters on Shift+Enter', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'illegal:name?*';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).not.toHaveBeenCalled();
+		expect(Notice.messages).toContain('File name contains invalid characters.');
+	});
+
+	it('opens existing note and displays a notice if the file already exists on Shift+Enter', async () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = '~/Root note';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).not.toHaveBeenCalled();
+		expect(Notice.messages).toContain('"Root note" already exists — opening file.');
+		await vi.waitFor(() => {
+			expect(openedFiles).toContain(rootFile);
+		});
+	});
+
+	it('shows a notice and refuses to create when a folder with the same name exists', () => {
+		addFolder(currentFolder, 'FolderNote.md');
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'FolderNote.md';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).not.toHaveBeenCalled();
+		expect(Notice.messages).toContain('A folder named "FolderNote.md" already exists.');
+	});
+
+	it('shows a notice when the specified parent folder does not exist', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'NonexistentFolder/NewNote';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(app.vault.create).not.toHaveBeenCalled();
+		expect(Notice.messages).toContain('The specified folder does not exist.');
+	});
+
+	it('catches and reports creation error if vault.create fails', async () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		vi.mocked(app.vault.create).mockRejectedValueOnce(new Error('Permission denied'));
+
+		modal.inputEl.value = 'Failed note';
+		const event = new KeyboardEvent('keydown', {
+			key: 'Enter',
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		await vi.waitFor(() => {
+			expect(Notice.messages).toContain('Could not create file: Permission denied');
+		});
+	});
+
 	it('completes the highlighted folder suggestion with a trailing slash on Tab', () => {
 		const modal = highlightEntry(nestedFolder, 'Nes');
 		modal.inputEl.value = 'Nes';
@@ -792,5 +1072,235 @@ describe('file palette picker', () => {
 		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));
 
 		expect(shownPaths).toEqual([root.path]);
+	});
+
+	describe('search ranking and tokenization', () => {
+		it('tokenizes Hong20energyForecastingReview into word and digit tokens', () => {
+			expect(tokenize('Hong20energyForecastingReview')).toEqual(['hong', '20', 'energy', 'forecasting', 'review']);
+		});
+
+		it('tokenizes PDFExtractionNotes preserving acronym and word boundaries', () => {
+			expect(tokenize('PDFExtractionNotes')).toEqual(['pdf', 'extraction', 'notes']);
+		});
+
+		it('tokenizes kebab-case and snake_case in wind-power_notes', () => {
+			expect(tokenize('wind-power_notes')).toEqual(['wind', 'power', 'notes']);
+		});
+
+		it('classifies forecasting against energyForecastingReview as WholeWord', () => {
+			const tokens = tokenize('energyForecastingReview');
+			expect(classifyLiteral('energyForecastingReview', tokens, 'forecasting')).toBe(MatchQuality.WholeWord);
+		});
+
+		it('classifies power against wind-power_notes as WholeWord', () => {
+			const tokens = tokenize('wind-power_notes');
+			expect(classifyLiteral('wind-power_notes', tokens, 'power')).toBe(MatchQuality.WholeWord);
+		});
+
+		it('classifies pin against Pinson as WordPrefix', () => {
+			const tokens = tokenize('Pinson');
+			expect(classifyLiteral('Pinson', tokens, 'pin')).toBe(MatchQuality.WordPrefix);
+		});
+
+		it('classifies inso against Pinson as Substring', () => {
+			const tokens = tokenize('Pinson');
+			expect(classifyLiteral('Pinson', tokens, 'inso')).toBe(MatchQuality.Substring);
+		});
+
+		it('evaluates queries differing only in case to the same quality', () => {
+			const tokens = tokenize('Pinson');
+			expect(classifyLiteral('Pinson', tokens, 'PINSON')).toBe(MatchQuality.WholeWord);
+			expect(classifyLiteral('Pinson', tokens, 'pinson')).toBe(MatchQuality.WholeWord);
+			expect(classifyLiteral('Pinson', tokens, 'PIN')).toBe(MatchQuality.WordPrefix);
+			expect(classifyLiteral('Pinson', tokens, 'pin')).toBe(MatchQuality.WordPrefix);
+		});
+
+		it('ranks filename match first when whole-word match quality is equal', () => {
+			const filenameMatch = { quality: MatchQuality.WholeWord, isFilename: true, fuzzyScore: 0 };
+			const propertyMatch = { quality: MatchQuality.WholeWord, isFilename: false, fuzzyScore: 0 };
+			expect(compareWordMatches(filenameMatch, propertyMatch)).toBeGreaterThan(0);
+		});
+
+		it('ranks property file first when filename has prefix and property has whole word', () => {
+			const filenamePrefix = { quality: MatchQuality.WordPrefix, isFilename: true, fuzzyScore: 0 };
+			const propertyWholeWord = { quality: MatchQuality.WholeWord, isFilename: false, fuzzyScore: 0 };
+			expect(compareWordMatches(propertyWholeWord, filenamePrefix)).toBeGreaterThan(0);
+		});
+
+		it('ranks property file first when property has whole word and filename has scattered fuzzy match', () => {
+			const filenameFuzzy = { quality: MatchQuality.Fuzzy, isFilename: true, fuzzyScore: 10 };
+			const propertyWholeWord = { quality: MatchQuality.WholeWord, isFilename: false, fuzzyScore: 0 };
+			expect(compareWordMatches(propertyWholeWord, filenameFuzzy)).toBeGreaterThan(0);
+		});
+
+		it('ranks whole word in authors above weak fuzzy hits in filename and title', async () => {
+			const settingTab = plugin.settingTabs[0];
+			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const setting = new Setting(document.createElement('div'));
+			definition?.render?.(setting, {} as never);
+			await setting?.text?.change('title, authors');
+
+			const fragmented = addFile(currentFolder, 'DePinto23partisanEconLens.md');
+			metadataByFile.set(fragmented, {
+				frontmatter: {
+					title: 'CBS News poll analysis looks at how Americans rate the economy throughout...',
+					authors: 'De Pinto, Jennifer',
+				},
+			});
+
+			const authorsMatch = addFile(currentFolder, 'Hong20energyForecastingReview.md');
+			metadataByFile.set(authorsMatch, {
+				frontmatter: {
+					title: 'Energy forecasting: A review and outlook',
+					authors: ['Hong, Tao', 'Pinson, Pierre', 'Wang, Yi'],
+				},
+			});
+
+			vi.spyOn(ObsidianMock, 'prepareFuzzySearch').mockReturnValue((value) => {
+				if (value === 'DePinto23partisanEconLens') return { score: 1, matches: [[2, 3], [4, 6], [14, 15], [19, 21]] };
+				if (value.startsWith('CBS News')) return { score: 1, matches: [[9, 10], [20, 21], [44, 46], [58, 60]] };
+				if (value === 'Pinson, Pierre') return { score: 10, matches: [[0, 6]] };
+				return null;
+			});
+
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			const suggestions = modal?.getSuggestions('pinson');
+
+			expect(suggestions?.map(({ file }) => file)).toEqual([authorsMatch, fragmented]);
+		});
+
+		it('includes files when different query words match different properties', async () => {
+			const settingTab = plugin.settingTabs[0];
+			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const setting = new Setting(document.createElement('div'));
+			definition?.render?.(setting, {} as never);
+			await setting?.text?.change('title, authors');
+
+			const multiMatch = addFile(currentFolder, 'unrelated-filename.md');
+			metadataByFile.set(multiMatch, {
+				frontmatter: {
+					title: 'Energy forecasting: A review',
+					authors: ['Pinson, Pierre'],
+				},
+			});
+
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			const suggestions = modal?.getSuggestions('pinson forecasting');
+
+			expect(suggestions?.map(({ file }) => file)).toContain(multiMatch);
+		});
+
+		it('excludes files when one query word is absent everywhere', async () => {
+			const settingTab = plugin.settingTabs[0];
+			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const setting = new Setting(document.createElement('div'));
+			definition?.render?.(setting, {} as never);
+			await setting?.text?.change('title, authors');
+
+			const partialMatch = addFile(currentFolder, 'unrelated-filename.md');
+			metadataByFile.set(partialMatch, {
+				frontmatter: {
+					title: 'Energy forecasting: A review',
+					authors: ['Pinson, Pierre'],
+				},
+			});
+
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			const suggestions = modal?.getSuggestions('pinson absentword');
+
+			expect(suggestions?.map(({ file }) => file)).not.toContain(partialMatch);
+		});
+
+		it('excludes matches that only span across two list items', async () => {
+			const settingTab = plugin.settingTabs[0];
+			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const setting = new Setting(document.createElement('div'));
+			definition?.render?.(setting, {} as never);
+			await setting?.text?.change('authors');
+
+			const file = addFile(currentFolder, 'spanning-test.md');
+			metadataByFile.set(file, {
+				frontmatter: {
+					authors: ['Alice Pin', 'Son Smith'],
+				},
+			});
+
+			// Mock fuzzy matcher so 'pinson' would only match if the text were joined as "Alice Pin, Son Smith"
+			vi.spyOn(ObsidianMock, 'prepareFuzzySearch').mockReturnValue((text) => {
+				if (text === 'Alice Pin, Son Smith') return { score: 10, matches: [] };
+				return null;
+			});
+
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			const suggestions = modal?.getSuggestions('pinson');
+
+			expect(suggestions?.map(({ file }) => file)).not.toContain(file);
+		});
+
+		it('orders files with identical match quality alphabetically by path', () => {
+			const fileB = addFile(currentFolder, 'file-beta.md');
+			const fileA = addFile(currentFolder, 'file-alpha.md');
+
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			const suggestions = modal?.getSuggestions('file');
+
+			expect(suggestions?.map(({ file }) => file)).toEqual([fileA, fileB]);
+		});
+
+		it('preserves unfiltered behavior and parent entry on empty query', () => {
+			const note = addFile(currentFolder, 'Current note.md');
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			const suggestions = modal?.getSuggestions('');
+
+			expect(suggestions?.[0]?.isParent).toBe(true);
+			expect(suggestions?.slice(1).map(({ file }) => file)).toContain(note);
+		});
+
+		it('aligns highlight ranges with the displayed text for camel-case and list items', async () => {
+			await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
+			const settingTab = plugin.settingTabs[0];
+			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const setting = new Setting(document.createElement('div'));
+			definition?.render?.(setting, {} as never);
+			await setting?.text?.change('authors');
+
+			const file = addFile(currentFolder, 'Hong20energyForecastingReview.md');
+			metadataByFile.set(file, {
+				frontmatter: {
+					authors: ['Hong, Tao', 'Pinson, Pierre'],
+				},
+			});
+
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			const entry = modal?.getSuggestions('pinson').find((s) => s.file === file);
+			if (!modal || !entry) throw new Error('Expected suggestion');
+			const element = document.createElement('div');
+			modal.renderSuggestion(entry, element);
+
+			expect(element.querySelector('.file-palette-suggestion-property-value')?.textContent).toBe('Hong, Tao, Pinson, Pierre');
+			expect(Array.from(element.querySelectorAll('.suggestion-highlight'), (el) => el.textContent)).toEqual(['Pinson']);
+		});
+	});
+});
+
+describe('alignFuzzyRanges', () => {
+	it('moves a stray first letter onto the word start', () => {
+		// "Yes, America is super polarized": matcher took p from "super" and "olariz" from "polarized".
+		const text = 'Yes, America is super polarized.';
+		const p = text.indexOf('super') + 2;
+		const o = text.indexOf('polarized') + 1;
+		expect(alignFuzzyRanges(text, [[p, p + 1], [o, o + 6]], 'polarization')).toEqual([[o - 1, o + 6]]);
+	});
+
+	it('leaves already aligned and unrelated ranges alone', () => {
+		expect(alignFuzzyRanges('polarized', [[0, 7]], 'polarization')).toEqual([[0, 7]]);
+		expect(alignFuzzyRanges('Policy Feasibility', [[0, 3], [8, 9]], 'polarization')).toEqual([[0, 3], [8, 9]]);
 	});
 });

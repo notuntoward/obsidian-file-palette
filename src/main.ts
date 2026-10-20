@@ -1,6 +1,7 @@
 import {
 	AbstractInputSuggest,
 	App,
+	normalizePath,
 	Notice,
 	Platform,
 	Plugin,
@@ -49,6 +50,131 @@ function mergeRanges(ranges: [number, number][]): [number, number][] {
 		}
 	}
 	return merged;
+}
+
+export enum MatchQuality {
+	Fuzzy = 1,
+	Substring = 2,
+	WordPrefix = 3,
+	WholeWord = 4,
+}
+
+export function tokenize(text: string): string[] {
+	// Split on case/digit boundaries BEFORE lowercasing.
+	return text
+		.replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, '$1 $2')
+		.replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2')
+		.replace(/(\p{L})(\p{N})/gu, '$1 $2')
+		.replace(/(\p{N})(\p{L})/gu, '$1 $2')
+		.toLowerCase()
+		.match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
+}
+
+export function classifyLiteral(
+	text: string,
+	tokens: readonly string[],
+	queryWord: string,
+): MatchQuality | null {
+	const word = queryWord.toLowerCase();
+	if (tokens.includes(word)) return MatchQuality.WholeWord;
+	if (tokens.some((t) => t.startsWith(word))) return MatchQuality.WordPrefix;
+	if (text.toLowerCase().includes(word)) return MatchQuality.Substring;
+	return null; // caller then tries prepareFuzzySearch
+}
+
+export interface WordMatch {
+	quality: MatchQuality;
+	isFilename: boolean;
+	fuzzyScore: number; // use 0 for literal matches with no fuzzy result
+}
+
+/**
+ * Ranking rules:
+ * 1. Match quality comes first: WholeWord (4) > WordPrefix (3) > Substring (2) > Fuzzy (1).
+ *    A whole-word property match beats a scattered fuzzy filename match.
+ * 2. For equal match quality, filename matches rank before property matches.
+ * 3. For equal quality and field location, the higher fuzzy score breaks the tie.
+ * 4. Across multiple query words, files are compared element-by-element after sorting
+ *    each file's per-word matches from weakest to strongest (weakest word decides first).
+ * 5. Files with completely identical match quality across all query words are ordered
+ *    alphabetically by path for stable results.
+ */
+export function compareWordMatches(a: WordMatch, b: WordMatch): number {
+	return (
+		a.quality - b.quality ||
+		Number(a.isFilename) - Number(b.isFilename) ||
+		a.fuzzyScore - b.fuzzyScore
+	);
+}
+
+function findLiteralRanges(text: string, queryWord: string): [number, number][] {
+	const ranges: [number, number][] = [];
+	const lowerText = text.toLowerCase();
+	const lowerWord = queryWord.toLowerCase();
+	if (!lowerWord) return ranges;
+	let index = lowerText.indexOf(lowerWord);
+	while (index >= 0) {
+		ranges.push([index, index + lowerWord.length]);
+		index = lowerText.indexOf(lowerWord, index + lowerWord.length);
+	}
+	return ranges;
+}
+
+/**
+ * Obsidian's fuzzy matcher may take the first letters of a query word from an
+ * earlier word ("su[p]er [olariz]ed") instead of the word start ("super [polariz]ed").
+ * When a highlighted run starts mid-word and the unhighlighted letters before it
+ * equal the query letters the matcher spent on earlier ranges, extend the run back
+ * to the word start and take those letters away from the earlier ranges.
+ */
+export function alignFuzzyRanges(
+	text: string,
+	ranges: [number, number][],
+	queryWord: string,
+): [number, number][] {
+	const query = queryWord.toLowerCase();
+	const lower = text.toLowerCase();
+	const isWordChar = (char: string) => /[\p{L}\p{N}]/u.test(char);
+	const out: [number, number][] = [];
+	let consumed = 0;
+	for (const [rangeStart, rangeEnd] of [...ranges].sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
+		let start = rangeStart;
+		let wordStart = rangeStart;
+		while (wordStart > 0 && isWordChar(text[wordStart - 1])) wordStart--;
+		const gap = rangeStart - wordStart;
+		const previous = out[out.length - 1];
+		if (
+			gap > 0 &&
+			gap <= consumed &&
+			(!previous || previous[1] <= wordStart) &&
+			lower.slice(wordStart, rangeStart) === query.slice(consumed - gap, consumed)
+		) {
+			let remaining = gap;
+			while (remaining > 0 && out.length) {
+				const last = out[out.length - 1];
+				const length = last[1] - last[0];
+				if (length <= remaining) {
+					out.pop();
+					remaining -= length;
+				} else {
+					last[1] -= remaining;
+					remaining = 0;
+				}
+			}
+			start = wordStart;
+		}
+		out.push([start, rangeEnd]);
+		consumed += rangeEnd - rangeStart;
+	}
+	return mergeRanges(out);
+}
+
+interface SearchableField {
+	text: string;
+	tokens: string[];
+	isFilename: boolean;
+	property?: string;
+	itemOffset: number;
 }
 
 interface RawProperty {
@@ -113,6 +239,12 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 		}
 
+		if (event.key === 'Enter' && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+			event.preventDefault();
+			void this.createNewFileFromQuery();
+			return;
+		}
+
 		if (event.key === ':' || event.key === '?' || event.key === '*') {
 			event.preventDefault();
 			this.runSelectedOperator(event.key);
@@ -150,11 +282,11 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const searchers = words.map((word) => prepareFuzzySearch(word));
 
 		const entries = folder.children.flatMap((file) => {
-			const rawProperties = file instanceof TFile ? this.getRawProperties(file) : [];
+			const { fields, displayProperties } = this.getFileSearchData(file);
 
-			if (!searchers.length) {
+			if (!words.length) {
 				const propertyValues = file instanceof TFile && this.showPropertyMatches
-					? rawProperties.map(({ property, value }) => ({ property, value, match: null }))
+					? displayProperties.map(({ property, value }) => ({ property, value, match: null }))
 					: undefined;
 				return [{
 					entry: {
@@ -162,69 +294,97 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 						isParent: false,
 						propertyValues,
 					},
-					matchCount: 0,
-					score: 0,
-					nameScore: 0,
+					sortedWordMatches: [] as WordMatch[],
 				}];
 			}
 
-			const propertyHits = rawProperties.map(() => ({
-				matches: [] as [number, number][],
-				scores: [] as number[],
-			}));
-			const nameHits: { matches: [number, number][]; scores: number[] } = {
-				matches: [],
-				scores: [],
-			};
-
-			let totalScore = 0;
-
-			for (const search of searchers) {
-				const nameMatch = search(file.name);
-				if (nameMatch) {
-					nameHits.matches.push(...((nameMatch.matches as [number, number][] | undefined) ?? []));
-					nameHits.scores.push(nameMatch.score);
+			const propertyHitsByProperty = new Map<string, { matches: [number, number][]; scores: number[] }>();
+			if (this.showPropertyMatches) {
+				for (const { property } of displayProperties) {
+					propertyHitsByProperty.set(property, { matches: [], scores: [] });
 				}
+			}
 
-				let wordBestScore = nameMatch?.score ?? Number.NEGATIVE_INFINITY;
-				let wordMatchedProperty = false;
+			const bestWordMatches: WordMatch[] = [];
 
-				for (let index = 0; index < rawProperties.length; index++) {
-					const propertyMatch = search(rawProperties[index].value);
-					if (propertyMatch) {
-						wordMatchedProperty = true;
-						propertyHits[index].matches.push(...((propertyMatch.matches as [number, number][] | undefined) ?? []));
-						propertyHits[index].scores.push(propertyMatch.score);
-						if (propertyMatch.score > wordBestScore) {
-							wordBestScore = propertyMatch.score;
+			for (let wIndex = 0; wIndex < words.length; wIndex++) {
+				const queryWord = words[wIndex];
+				const search = searchers[wIndex];
+				let bestMatchForWord: WordMatch | null = null;
+
+				for (const field of fields) {
+					const literalQuality = classifyLiteral(field.text, field.tokens, queryWord);
+					let fieldMatch: WordMatch | null = null;
+					let fieldRanges: [number, number][] = [];
+					let fieldScore = 0;
+
+					if (literalQuality !== null) {
+						const fuzzyResult = search(field.text);
+						fieldScore = fuzzyResult ? fuzzyResult.score : 0;
+						fieldRanges = fuzzyResult?.matches?.length
+							? alignFuzzyRanges(field.text, fuzzyResult.matches as [number, number][], queryWord)
+							: findLiteralRanges(field.text, queryWord);
+						fieldMatch = {
+							quality: literalQuality,
+							isFilename: field.isFilename,
+							fuzzyScore: fieldScore,
+						};
+					} else {
+						const fuzzyResult = search(field.text);
+						if (fuzzyResult) {
+							fieldScore = fuzzyResult.score;
+							fieldRanges = alignFuzzyRanges(
+								field.text,
+								(fuzzyResult.matches as [number, number][] | undefined) ?? [],
+								queryWord,
+							);
+							fieldMatch = {
+								quality: MatchQuality.Fuzzy,
+								isFilename: field.isFilename,
+								fuzzyScore: fieldScore,
+							};
+						}
+					}
+
+					if (fieldMatch) {
+						if (!bestMatchForWord || compareWordMatches(fieldMatch, bestMatchForWord) > 0) {
+							bestMatchForWord = fieldMatch;
+						}
+						if (!field.isFilename && field.property && this.showPropertyMatches) {
+							const propHit = propertyHitsByProperty.get(field.property);
+							if (propHit) {
+								const shiftedRanges: [number, number][] = fieldRanges.map(([start, end]) => [
+									start + field.itemOffset,
+									end + field.itemOffset,
+								]);
+								propHit.matches.push(...shiftedRanges);
+								propHit.scores.push(fieldScore);
+							}
 						}
 					}
 				}
 
-				if (!nameMatch && !wordMatchedProperty) {
+				if (!bestMatchForWord) {
 					return [];
 				}
 
-				totalScore += wordBestScore;
+				bestWordMatches.push(bestMatchForWord);
 			}
 
-			const nameMatched = nameHits.scores.length > 0;
-			const propertyMatched = propertyHits.some((hit) => hit.scores.length > 0);
-			const matchCount = Number(nameMatched) + Number(propertyMatched);
-			const nameScore = nameHits.scores.reduce((sum, score) => sum + score, 0);
+			const sortedWordMatches = [...bestWordMatches].sort(compareWordMatches);
 
 			const propertyValues: PropertyMatch[] | undefined = this.showPropertyMatches
-				? rawProperties.map((raw, index) => {
-					const hits = propertyHits[index];
-					const match: SearchResult | null = hits.scores.length
+				? displayProperties.map(({ property, value }) => {
+					const hit = propertyHitsByProperty.get(property);
+					const match: SearchResult | null = hit?.scores.length
 						? {
-							score: hits.scores.reduce((sum, score) => sum + score, 0),
-							matches: mergeRanges(hits.matches),
+							score: hit.scores.reduce((sum, score) => sum + score, 0),
+							matches: mergeRanges(hit.matches),
 						}
 						: null;
 					return {
-						property: raw.property,
-						value: raw.value,
+						property,
+						value,
 						match,
 					};
 				})
@@ -236,17 +396,21 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 					isParent: false,
 					propertyValues,
 				},
-				matchCount,
-				score: totalScore,
-				nameScore,
+				sortedWordMatches,
 			}];
 		});
 
-		entries.sort((left, right) =>
-			right.matchCount - left.matchCount ||
-			right.score - left.score ||
-			right.nameScore - left.nameScore
-		);
+		entries.sort((left, right) => {
+			for (let i = 0; i < left.sortedWordMatches.length; i++) {
+				const diff = compareWordMatches(left.sortedWordMatches[i], right.sortedWordMatches[i]);
+				if (diff !== 0) {
+					return -diff;
+				}
+			}
+			const leftPath = left.entry.file?.path ?? '';
+			const rightPath = right.entry.file?.path ?? '';
+			return leftPath.localeCompare(rightPath);
+		});
 		const suggestions: VaultEntry[] = entries.map(({ entry }) => entry);
 
 		if (folder.parent && (!words.length || words.every((word) => prepareFuzzySearch(word)('..')))) {
@@ -362,7 +526,8 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.renderHint(actions, `${modifier}${shift}L`, 'Link');
 
 		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
-		this.renderHint(openers, 'Enter', 'Open');
+		this.renderHint(openers, '↵', 'Open');
+		this.renderHint(openers, `${shift}↵`, 'Create');
 		this.renderHint(openers, `${modifier}${shift}↵`, 'New tab');
 		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group');
 		if (!Platform.isMobile) this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window');
@@ -451,6 +616,58 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			new Notice(`Could not open file in a ${destination}: ${reason}`);
+		}
+	}
+
+	private async createNewFileFromQuery(): Promise<void> {
+		const location = this.getQueryFolder(this.inputEl.value);
+		if (!location) {
+			new Notice('The specified folder does not exist.');
+			return;
+		}
+
+		const rawName = location.name.trim();
+		if (!rawName) {
+			new Notice('Enter a file name to create a note.');
+			return;
+		}
+
+		if (/[*\\/<>:|?#^[\]]/.test(rawName)) {
+			new Notice('File name contains invalid characters.');
+			return;
+		}
+
+		const extensionIndex = rawName.lastIndexOf('.');
+		const hasExtension = extensionIndex > 0;
+		const fileName = hasExtension ? rawName : `${rawName}.md`;
+		const folderPath = location.folder.path;
+		const fullPath = normalizePath(folderPath ? `${folderPath}/${fileName}` : fileName);
+
+		const existing = this.app.vault.getAbstractFileByPath(fullPath);
+		if (existing instanceof TFile) {
+			new Notice(`"${existing.basename}" already exists — opening file.`);
+			this.close();
+			void this.app.workspace.getLeaf(false).openFile(existing).catch((error: unknown) => {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not open file: ${reason}`);
+			});
+			return;
+		}
+		if (existing instanceof TFolder) {
+			new Notice(`A folder named "${fileName}" already exists.`);
+			return;
+		}
+
+		try {
+			const newFile = await this.app.vault.create(fullPath, '');
+			this.close();
+			void this.app.workspace.getLeaf(false).openFile(newFile).catch((error: unknown) => {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not open file: ${reason}`);
+			});
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not create file: ${reason}`);
 		}
 	}
 
@@ -585,16 +802,70 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}, 0);
 	}
 
-	private getRawProperties(file: TFile): RawProperty[] {
-		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-		if (!frontmatter) return [];
-		const propertyValues: RawProperty[] = [];
-		for (const property of this.searchProperties) {
-			const value: unknown = frontmatter[property];
-			if (typeof value !== 'string') continue;
-			propertyValues.push({ property, value });
+	private getFileSearchData(file: TAbstractFile): {
+		fields: SearchableField[];
+		displayProperties: RawProperty[];
+	} {
+		const fields: SearchableField[] = [];
+		const displayProperties: RawProperty[] = [];
+
+		if (file instanceof TFolder) {
+			fields.push({
+				text: file.name,
+				tokens: tokenize(file.name),
+				isFilename: true,
+				itemOffset: 0,
+			});
+			return { fields, displayProperties };
 		}
-		return propertyValues;
+
+		if (file instanceof TFile) {
+			fields.push({
+				text: file.basename,
+				tokens: tokenize(file.basename),
+				isFilename: true,
+				itemOffset: 0,
+			});
+
+			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (frontmatter) {
+				for (const property of this.searchProperties) {
+					const value: unknown = frontmatter[property];
+					if (typeof value === 'string') {
+						fields.push({
+							text: value,
+							tokens: tokenize(value),
+							isFilename: false,
+							property,
+							itemOffset: 0,
+						});
+						displayProperties.push({ property, value });
+					} else if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+						const items = value.map((item) => item.trim()).filter(Boolean);
+						if (items.length > 0) {
+							let offset = 0;
+							for (const item of items) {
+								fields.push({
+									text: item,
+									tokens: tokenize(item),
+									isFilename: false,
+									property,
+									itemOffset: offset,
+								});
+								offset += item.length + 2;
+							}
+							displayProperties.push({ property, value: items.join(', ') });
+						}
+					}
+				}
+			}
+		}
+
+		return { fields, displayProperties };
+	}
+
+	private getRawProperties(file: TFile): RawProperty[] {
+		return this.getFileSearchData(file).displayProperties;
 	}
 
 	private getQueryFolder(query: string): { folder: TFolder; name: string } | null {
@@ -679,8 +950,13 @@ export default class FilePalettePlugin extends Plugin {
 	}
 }
 
-class PropertyNameSuggest extends AbstractInputSuggest<string> {
-	private readonly propertyNames: string[];
+interface PropertySuggestion {
+	property: string;
+	isAllowed: boolean;
+}
+
+class PropertyNameSuggest extends AbstractInputSuggest<PropertySuggestion> {
+	private readonly properties: PropertySuggestion[];
 
 	constructor(
 		app: App,
@@ -688,17 +964,34 @@ class PropertyNameSuggest extends AbstractInputSuggest<string> {
 		private readonly propertyInputEl: HTMLInputElement,
 	) {
 		super(app, propertyInputEl);
-		this.propertyNames = this.collectStringPropertyNames();
-		this.onSelect((property) => {
-			this.onSelectProperty(this.replaceCurrentProperty(property));
+		this.properties = this.collectPropertyNames();
+		this.onSelect((suggestion) => {
+			if (!suggestion.isAllowed) return;
+			this.onSelectProperty(this.replaceCurrentProperty(suggestion.property));
 		});
 	}
 
-	renderSuggestion(property: string, element: HTMLElement): void {
-		element.setText(property);
+	renderSuggestion(suggestion: PropertySuggestion, element: HTMLElement): void {
+		if (suggestion.isAllowed) {
+			element.setText(suggestion.property);
+		} else {
+			element.addClass('fp-property-disabled');
+			const nameSpan = element.createSpan({ cls: 'fp-property-name' });
+			nameSpan.setText(suggestion.property);
+			const labelSpan = element.createSpan({ cls: 'fp-property-unsupported' });
+			labelSpan.setText(' (unsupported)');
+		}
 	}
 
-	protected getSuggestions(_query: string): string[] {
+	selectSuggestion(suggestion: PropertySuggestion, evt: MouseEvent | KeyboardEvent): void {
+		if (!suggestion.isAllowed) {
+			new Notice(`Property "${suggestion.property}" is not a string or string list.`);
+			return;
+		}
+		super.selectSuggestion(suggestion, evt);
+	}
+
+	protected getSuggestions(_query: string): PropertySuggestion[] {
 		const value = this.getValue();
 		const cursor = this.propertyInputEl.selectionStart ?? value.length;
 		const tokenStart = value.lastIndexOf(',', cursor - 1) + 1;
@@ -707,27 +1000,49 @@ class PropertyNameSuggest extends AbstractInputSuggest<string> {
 			value.slice(0, tokenStart).split(',').map((property) => property.trim().toLowerCase()).filter(Boolean),
 		);
 		const search = prepareFuzzySearch(currentToken);
-		const matches: { property: string; score: number }[] = [];
-		for (const property of this.propertyNames) {
-			if (alreadySelected.has(property.toLowerCase())) continue;
-			const match = currentToken ? search(property) : { score: 0, matches: [] };
-			if (match) matches.push({ property, score: match.score });
+		const matches: { suggestion: PropertySuggestion; score: number }[] = [];
+		for (const suggestion of this.properties) {
+			if (alreadySelected.has(suggestion.property.toLowerCase())) continue;
+			const match = currentToken ? search(suggestion.property) : { score: 0, matches: [] };
+			if (match) matches.push({ suggestion, score: match.score });
 		}
 		return matches
-			.sort((left, right) => right.score - left.score || left.property.localeCompare(right.property))
-			.map(({ property }) => property);
+			.sort(
+				(left, right) =>
+					Number(right.suggestion.isAllowed) - Number(left.suggestion.isAllowed) ||
+					right.score - left.score ||
+					left.suggestion.property.localeCompare(right.suggestion.property),
+			)
+			.map(({ suggestion }) => suggestion);
 	}
 
-	private collectStringPropertyNames(): string[] {
-		const properties = new Set<string>();
+	private collectPropertyNames(): PropertySuggestion[] {
+		const allowed = new Set<string>();
+		const disallowed = new Set<string>();
+
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
 			if (!frontmatter) continue;
 			for (const [property, value] of Object.entries(frontmatter)) {
-				if (typeof value === 'string') properties.add(property);
+				if (value === null || value === undefined) continue;
+				if (
+					typeof value === 'string' ||
+					(Array.isArray(value) && value.every((item) => typeof item === 'string'))
+				) {
+					allowed.add(property);
+				} else {
+					disallowed.add(property);
+				}
 			}
 		}
-		return [...properties];
+
+		const allPropertyNames = new Set([...allowed, ...disallowed]);
+		const result: PropertySuggestion[] = [];
+		for (const property of allPropertyNames) {
+			const isAllowed = allowed.has(property) && !disallowed.has(property);
+			result.push({ property, isAllowed });
+		}
+		return result;
 	}
 
 	private replaceCurrentProperty(property: string): string {
@@ -764,7 +1079,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Search properties',
-				desc: 'Comma-separated frontmatter properties to search alongside file names. Only string values are searched.',
+				desc: 'Comma-separated frontmatter properties to search alongside file names. Only string and string list values are searched.',
 				render: (setting) => {
 					let propertySuggest: PropertyNameSuggest | null = null;
 					setting.addText((text) => {
@@ -785,7 +1100,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 			},
 			{
 				name: 'Show matching properties',
-				desc: 'Show configured string-valued properties below each matching file name, with matched text highlighted.',
+				desc: 'Show configured string and string list properties below each matching file name, with matched text highlighted.',
 				control: {
 					type: 'toggle',
 					key: 'showPropertyMatches',

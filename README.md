@@ -13,6 +13,7 @@ A fast file and folder picker for jumping to files and browsing folders.
 | --- | --- |
 | Up / Down | Highlight a suggestion |
 | Enter | Open in current tab or browse into a folder|
+| Shift+Enter | Create a new file in the current folder using the search query |
 | Ctrl+Shift+Enter; Cmd+Shift+Enter | Open in a new tab |
 | Ctrl+Alt+Enter; Cmd+Option+Enter | Open in a new tab group |
 | Ctrl+Alt+Shift+Enter; Cmd+Option+Shift+Enter | Open in a new window (desktop only) |
@@ -27,5 +28,5 @@ A fast file and folder picker for jumping to files and browsing folders.
 ## Settings
 
 - **Show command title**: Toggle showing the "File palette" heading above the current folder path in the picker modal (defaults to enabled). When disabled, the folder path remains visible.
-- **Search properties**: Comma-separated frontmatter properties to search alongside file names (defaults to `title`). Offers autocomplete suggestions for string-valued properties found in your vault. Only string-valued properties are searched.
+- **Search properties**: Comma-separated frontmatter properties to search alongside file names (defaults to `title`). Offers autocomplete suggestions for properties found in your vault, indicating unsupported properties. Only string and string list values are searched.
 - **Show matching properties**: Toggle displaying configured frontmatter property values underneath each matching file name in the suggestion list (defaults to disabled). When enabled, matched text across all search terms is highlighted.
