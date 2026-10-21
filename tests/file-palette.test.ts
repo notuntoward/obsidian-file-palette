@@ -12,6 +12,7 @@ import FilePalettePlugin, {
 	makeLocation,
 	MatchQuality,
 	norm,
+	splitLocationPath,
 	tokenize,
 	vaultBase,
 } from '../src/main';
@@ -515,15 +516,15 @@ describe('file palette picker', () => {
 			configurable: true,
 			get: () => {
 				const visibleSegments = path.querySelectorAll('.fp-path-segment:not(.fp-path-hidden)').length;
-				return visibleSegments === 3 ? 200 : visibleSegments === 2 ? 120 : 40;
+				return visibleSegments === 3 ? 200 : 40;
 			},
 		});
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
 		expect(path.querySelector('.fp-path-ellipsis')?.textContent).toBe('…');
 		expect(Array.from(path.querySelectorAll('.fp-path-segment:not(.fp-path-hidden)'), (segment) => segment.textContent))
-			.toEqual(['Deepest']);
-		expect(path.querySelectorAll('.fp-path-segment.fp-path-hidden')).toHaveLength(2);
+			.toEqual(['Folder with spaces & [special]', 'Deepest']);
+		expect(path.querySelectorAll('.fp-path-segment.fp-path-hidden')).toHaveLength(1);
 		expect(path.getAttribute('title')).toBe('/current/Folder with spaces & [special]/Deepest');
 	});
 
@@ -1495,7 +1496,7 @@ describe('external file and folder palette behavior', () => {
 		expect(indicator?.getAttribute('data-icon')).toBe('hard-drive');
 
 		const pathEl = modal.modalEl.querySelector('.fp-path');
-		const expectedDisplay = tempDir.replace(/\//g, '\\');
+		const expectedDisplay = tempDir.replace(/\\/g, '/');
 		expect(pathEl?.getAttribute('title')).toBe(expectedDisplay);
 	});
 
@@ -1519,6 +1520,7 @@ describe('external file and folder palette behavior', () => {
 		const commands = disabledHints.map((el) => el.querySelector('.fp-hint-command')?.textContent);
 		expect(commands).toContain(':');
 		expect(commands.some((c) => c?.includes('↵'))).toBe(true);
+		expect(commands.some((c) => c?.includes('L'))).toBe(true);
 	});
 
 	it('shows a notice that sidebar only shows vault files when colon operator is pressed', async () => {
@@ -1563,8 +1565,8 @@ describe('external file and folder palette behavior', () => {
 		await vi.waitFor(() => {
 			const createdPath = join(tempDir, 'new-created-outside.md');
 			expect(readFileSync(createdPath, 'utf8')).toBe('');
+			expect(openedFiles.length).toBe(1);
 		});
-		expect(openedFiles.length).toBe(1);
 	});
 
 	it('copies a file:/// URI link with Ctrl+Shift+L when outside the vault', async () => {
@@ -1611,7 +1613,7 @@ describe('external file and folder palette behavior', () => {
 
 		expect(modal.modalEl.classList.contains('palette-external')).toBe(false);
 		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
-		expect(indicator?.classList.contains('fp-path-hidden')).toBe(true);
+		expect(indicator?.getAttribute('data-icon')).toBe('vault');
 	});
 
 	it('stays in vault when browseOutsideVault is disabled', async () => {
@@ -1657,6 +1659,72 @@ describe('external file and folder palette behavior', () => {
 
 		modal2.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
 		expect(openedDefaultAppPaths).toEqual([expectedOsPath]);
+	});
+
+	it('splits locations into breadcrumb segments correctly across vault, Windows, and POSIX', () => {
+		// Vault root
+		expect(splitLocationPath({ absPath: 'C:/Vault', inVault: true, vaultRelPath: '/' })).toEqual([
+			{ name: '/', path: '/', isRoot: true },
+		]);
+
+		// Vault subfolders
+		expect(splitLocationPath({ absPath: 'C:/Vault/Finance/Projects', inVault: true, vaultRelPath: '/Finance/Projects' })).toEqual([
+			{ name: '/', path: '/', isRoot: true },
+			{ name: 'Finance', path: '/Finance', isRoot: false },
+			{ name: 'Projects', path: '/Finance/Projects', isRoot: false },
+		]);
+
+		// Windows path with backslashes
+		expect(splitLocationPath({ absPath: 'C:\\Users\\scott\\repos\\docs', inVault: false, vaultRelPath: null })).toEqual([
+			{ name: 'C:', path: 'C:/', isRoot: true },
+			{ name: 'Users', path: 'C:/Users', isRoot: false },
+			{ name: 'scott', path: 'C:/Users/scott', isRoot: false },
+			{ name: 'repos', path: 'C:/Users/scott/repos', isRoot: false },
+			{ name: 'docs', path: 'C:/Users/scott/repos/docs', isRoot: false },
+		]);
+
+		// Windows UNC path
+		expect(splitLocationPath({ absPath: '\\\\server\\share\\docs\\sub', inVault: false, vaultRelPath: null })).toEqual([
+			{ name: '//server/share', path: '//server/share', isRoot: true },
+			{ name: 'docs', path: '//server/share/docs', isRoot: false },
+			{ name: 'sub', path: '//server/share/docs/sub', isRoot: false },
+		]);
+
+		// POSIX path
+		expect(splitLocationPath({ absPath: '/home/scott/docs', inVault: false, vaultRelPath: null })).toEqual([
+			{ name: '/', path: '/', isRoot: true },
+			{ name: 'home', path: '/home', isRoot: false },
+			{ name: 'scott', path: '/home/scott', isRoot: false },
+			{ name: 'docs', path: '/home/scott/docs', isRoot: false },
+		]);
+	});
+
+	it('navigates when clicking the path icon, root, or parent segment', async () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const pathEl = modal.modalEl.querySelector('.fp-path');
+		if (!pathEl) throw new Error('Expected path element');
+
+		// Check external icon is hard-drive
+		const iconEl = pathEl.querySelector<HTMLElement>('.fp-path-icon');
+		expect(iconEl?.getAttribute('data-icon')).toBe('hard-drive');
+
+		// Click parent segment (the second segment)
+		const segments = Array.from(pathEl.querySelectorAll<HTMLElement>('.fp-path-segment'));
+		expect(segments.length).toBeGreaterThan(1);
+
+		// Click the root segment
+		const rootEl = pathEl.querySelector<HTMLElement>('.fp-path-root');
+		expect(rootEl).not.toBeNull();
+		rootEl?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+		// Clicking closes current modal and opens next at root
+		await vi.waitFor(() => {
+			const latestModal = SuggestModal.instances.at(-1);
+			expect(latestModal).not.toBeNull();
+		});
 	});
 });
 

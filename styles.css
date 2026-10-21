@@ -16,6 +16,7 @@
 	position: relative;
 	display: flex;
 	direction: ltr;
+	align-items: center;
 	min-width: 0;
 	overflow: hidden;
 	padding: var(--size-4-2) var(--size-4-3);
@@ -25,21 +26,56 @@
 	white-space: nowrap;
 }
 
+.fp-path-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	margin-inline-end: var(--size-4-1);
+	color: var(--text-muted);
+	cursor: pointer;
+	border-radius: var(--radius-s);
+	padding: 2px;
+	transition: color 0.1s ease, background-color 0.1s ease;
+}
+
+.fp-path-icon:hover {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+}
+
+.fp-path-icon svg {
+	width: var(--icon-size, 16px);
+	height: var(--icon-size, 16px);
+}
+
 .fp-path-segment,
 .fp-path-separator {
 	flex: 0 0 auto;
 	unicode-bidi: isolate;
 }
 
-.fp-path-segment {
+.fp-path-segment,
+.fp-path-root {
 	direction: ltr;
+	border-radius: var(--radius-s);
+	padding: 1px 2px;
+	cursor: pointer;
+	transition: color 0.1s ease, background-color 0.1s ease;
+}
+
+.fp-path-segment:hover,
+.fp-path-root:hover {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
 }
 
 .fp-path-hidden {
 	display: none;
 }
 
-.fp-path-parent {
+.fp-path-parent,
+.fp-path-root {
 	color: var(--text-muted);
 }
 
@@ -175,6 +211,7 @@
 
 .file-palette-modal.palette-external .fp-path,
 .file-palette-modal.palette-external .palette-path {
+	border-left: 2px solid var(--text-faint);
 	color: var(--text-muted);
 }
 
@@ -186,6 +223,7 @@
 }
 
 .fp-hint.is-disabled {
-	opacity: 0.4;
+	opacity: 0.35;
+	pointer-events: none;
 }
 

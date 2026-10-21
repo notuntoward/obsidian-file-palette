@@ -102,6 +102,66 @@ export function locationFromFolder(app: App, folder: TFolder): PaletteLocation {
 	};
 }
 
+export interface PathSegment {
+	name: string;
+	path: string;
+	isRoot: boolean;
+}
+
+export function splitLocationPath(loc: PaletteLocation): PathSegment[] {
+	if (loc.inVault) {
+		const rel = (loc.vaultRelPath ?? '/').replace(/\\/g, '/');
+		const rawSegments = rel.split('/').filter(Boolean);
+		const segments: PathSegment[] = [{ name: '/', path: '/', isRoot: true }];
+
+		let accumulated = '';
+		for (const part of rawSegments) {
+			accumulated += `/${part}`;
+			segments.push({ name: part, path: accumulated, isRoot: false });
+		}
+		return segments;
+	}
+
+	const normalized = loc.absPath.replace(/\\/g, '/').replace(/\/+$/, '');
+
+	const uncMatch = normalized.match(/^(\/\/[^/]+\/[^/]+)(?:\/(.*))?$/);
+	if (uncMatch) {
+		const rootPath = uncMatch[1];
+		const subSegments = uncMatch[2] ? uncMatch[2].split('/').filter(Boolean) : [];
+		const segments: PathSegment[] = [{ name: rootPath, path: rootPath, isRoot: true }];
+		let current = rootPath;
+		for (const part of subSegments) {
+			current += `/${part}`;
+			segments.push({ name: part, path: current, isRoot: false });
+		}
+		return segments;
+	}
+
+	if (/^[a-zA-Z]:/.test(normalized)) {
+		const drive = normalized.slice(0, 2);
+		const rest = normalized.slice(2).replace(/^\/+/, '');
+		const segments: PathSegment[] = [{ name: drive, path: `${drive}/`, isRoot: true }];
+		if (rest) {
+			const parts = rest.split('/').filter(Boolean);
+			let current = drive;
+			for (const part of parts) {
+				current += `/${part}`;
+				segments.push({ name: part, path: current, isRoot: false });
+			}
+		}
+		return segments;
+	}
+
+	const parts = normalized.split('/').filter(Boolean);
+	const segments: PathSegment[] = [{ name: '/', path: '/', isRoot: true }];
+	let current = '';
+	for (const part of parts) {
+		current += `/${part}`;
+		segments.push({ name: part, path: current, isRoot: false });
+	}
+	return segments;
+}
+
 function getFs(): typeof import('fs') | null {
 	if (!Platform.isDesktopApp) return null;
 	try {
@@ -311,8 +371,9 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private pathEl: HTMLDivElement | null = null;
 	private indicatorEl: HTMLSpanElement | null = null;
 	private pathEllipsisEl: HTMLSpanElement | null = null;
+	private ellipsisSeparatorEl: HTMLSpanElement | null = null;
 	private pathSegments: HTMLSpanElement[] = [];
-	private pathSegmentSeparators: HTMLSpanElement[] = [];
+	private pathSegmentSeparators: (HTMLSpanElement | null)[] = [];
 	private pathResizeObserver: ResizeObserver | null = null;
 	currentLocation: PaletteLocation;
 
@@ -490,7 +551,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			title.hidden = !this.showCommandTitle;
 			this.pathEl = header.createDiv({ cls: 'fp-path file-palette-current-path palette-path' });
 			this.pathEl.setAttribute('aria-label', 'Current folder path');
-			this.indicatorEl = this.pathEl.createSpan({ cls: 'fp-external-indicator fp-path-hidden' });
+			this.indicatorEl = this.pathEl.createSpan({ cls: 'fp-path-icon fp-external-indicator' });
 			inputContainer.before(header);
 		}
 		this.updateCurrentPathDisplay();
@@ -515,21 +576,22 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.pathEl = null;
 		this.indicatorEl = null;
 		this.pathEllipsisEl = null;
+		this.ellipsisSeparatorEl = null;
 		this.pathSegments = [];
 		this.pathSegmentSeparators = [];
 		this.contentEl.empty();
 	}
 
-	private getCapabilities(): LocationCapabilities {
+	private getCapabilities(loc: PaletteLocation = this.currentLocation): LocationCapabilities {
 		return {
-			canCreate: this.currentLocation.inVault || this.allowCreateOutsideVault,
-			canRevealInSidebar: this.currentLocation.inVault,
-			canCopyLink: true,
+			canCreate: loc.inVault,
+			canRevealInSidebar: loc.inVault,
+			canCopyLink: loc.inVault,
 			canOpen: true,
 		};
 	}
 
-	private renderFooter(): void {
+	private renderFooter(loc: PaletteLocation = this.currentLocation): void {
 		let footer = this.modalEl.querySelector<HTMLElement>('.fp-footer');
 		if (!footer) {
 			footer = this.modalEl.createDiv({ cls: 'fp-footer' });
@@ -538,7 +600,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			footer.empty();
 		}
 
-		const caps = this.getCapabilities();
+		const caps = this.getCapabilities(loc);
 		const modifier = Platform.isMacOS ? '⌘' : 'Ctrl+';
 		const shift = Platform.isMacOS ? '⇧' : 'Shift+';
 		const alternate = Platform.isMacOS ? '⌥' : 'Alt+';
@@ -549,7 +611,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.renderHint(actions, ':', 'Reveal', !caps.canRevealInSidebar);
 		this.renderHint(actions, '?', 'Explorer');
 		this.renderHint(actions, '*', 'App');
-		this.renderHint(actions, `${modifier}${shift}L`, 'Link');
+		this.renderHint(actions, `${modifier}${shift}L`, 'Link', !caps.canCopyLink);
 
 		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
 		this.renderHint(openers, '↵', 'Open');
@@ -882,68 +944,87 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.modalEl.classList.toggle('palette-external', !loc.inVault);
 
 		this.pathEl.empty();
-		this.indicatorEl = this.pathEl.createSpan({
-			cls: loc.inVault ? 'fp-external-indicator fp-path-hidden' : 'fp-external-indicator',
-		});
-		if (!loc.inVault) {
-			setIcon(this.indicatorEl, 'hard-drive');
-		}
-
 		this.pathEllipsisEl = null;
+		this.ellipsisSeparatorEl = null;
 		this.pathSegments = [];
 		this.pathSegmentSeparators = [];
 
-		if (loc.inVault) {
-			const segments = (loc.vaultRelPath || '/').split('/').filter(Boolean);
-			const fullPath = segments.length ? `/${segments.join('/')}` : '/';
-			this.pathEl.setAttribute('title', fullPath);
+		const fullDisplayPath = loc.inVault
+			? (loc.vaultRelPath || '/')
+			: loc.absPath.replace(/\\/g, '/');
+		this.pathEl.setAttribute('title', fullDisplayPath);
 
-			if (!segments.length) {
-				this.pathEl.createSpan({ cls: 'fp-path-current' }).setText('/');
-				return;
-			}
+		const segments = splitLocationPath(loc);
+		const rootSegment = segments[0];
 
-			this.pathEllipsisEl = this.pathEl.createSpan({ cls: 'fp-path-ellipsis' });
-			this.createPathSeparator('/');
-			for (let index = 0; index < segments.length; index++) {
-				const segment = this.pathEl.createSpan({
-					cls: index === segments.length - 1 ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
-				});
-				segment.setText(segments[index]);
-				this.pathSegments.push(segment);
-				if (index < segments.length - 1) {
-					this.pathSegmentSeparators.push(this.createPathSeparator('/'));
-				}
-			}
-		} else {
-			const sep = Platform.isWin ? '\\' : '/';
-			const displayPath = Platform.isWin ? loc.absPath.replace(/\//g, '\\') : loc.absPath;
-			this.pathEl.setAttribute('title', displayPath);
+		// 1. Icon (Click jumps to root)
+		this.indicatorEl = this.pathEl.createSpan({
+			cls: 'fp-path-icon fp-external-indicator',
+			attr: {
+				'aria-label': loc.inVault ? 'Vault root' : 'Drive root',
+				role: 'button',
+				tabindex: '-1',
+			},
+		});
+		setIcon(this.indicatorEl, loc.inVault ? 'vault' : 'hard-drive');
+		this.indicatorEl.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.navigateToLocation(
+				loc.inVault ? this.getVaultRootLocation() : makeLocation(this.app, rootSegment.path),
+			);
+		});
 
-			const segments = loc.absPath.split('/').filter(Boolean);
-			if (!segments.length) {
-				this.pathEl.createSpan({ cls: 'fp-path-current' }).setText(displayPath);
-				return;
-			}
+		// 2. Root segment (/ or C:)
+		const isRootOnly = segments.length === 1;
+		const rootEl = this.pathEl.createSpan({
+			cls: isRootOnly ? 'fp-path-root fp-path-current' : 'fp-path-root',
+			attr: { role: 'button', tabindex: '-1' },
+		});
+		rootEl.setText(rootSegment.name);
+		rootEl.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.navigateToLocation(
+				loc.inVault ? this.getVaultRootLocation() : makeLocation(this.app, rootSegment.path),
+			);
+		});
 
-			this.pathEllipsisEl = this.pathEl.createSpan({ cls: 'fp-path-ellipsis' });
-			if (!Platform.isWin) {
-				this.createPathSeparator('/');
+		if (isRootOnly) {
+			this.renderFooter(loc);
+			return;
+		}
+
+		// 3. Middle Ellipsis element (hidden until truncation occurs)
+		this.pathEllipsisEl = this.pathEl.createSpan({ cls: 'fp-path-ellipsis fp-path-hidden' });
+		this.ellipsisSeparatorEl = this.createPathSeparator('/');
+		this.ellipsisSeparatorEl.setText('');
+		this.ellipsisSeparatorEl.classList.add('fp-path-hidden');
+
+		// 4. Subfolders
+		for (let index = 1; index < segments.length; index++) {
+			const seg = segments[index];
+			const isLast = index === segments.length - 1;
+
+			// Separator
+			let sepEl: HTMLSpanElement | null = null;
+			if (index > 1 || (!loc.inVault && rootSegment.name !== '/')) {
+				sepEl = this.createPathSeparator('/');
 			}
-			for (let index = 0; index < segments.length; index++) {
-				const segment = this.pathEl.createSpan({
-					cls: index === segments.length - 1 ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
-				});
-				segment.setText(segments[index]);
-				this.pathSegments.push(segment);
-				if (index < segments.length - 1) {
-					this.pathSegmentSeparators.push(this.createPathSeparator(sep));
-				}
-			}
+			this.pathSegmentSeparators.push(sepEl);
+
+			const segmentEl = this.pathEl.createSpan({
+				cls: isLast ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
+				attr: { role: 'button', tabindex: '-1' },
+			});
+			segmentEl.setText(seg.name);
+			segmentEl.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.navigateToLocation(makeLocation(this.app, seg.path));
+			});
+			this.pathSegments.push(segmentEl);
 		}
 
 		this.updatePathTruncation();
-		this.renderFooter();
+		this.renderFooter(loc);
 	}
 
 	private createPathSeparator(char = '/'): HTMLSpanElement {
@@ -957,17 +1038,26 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private updatePathTruncation(): void {
 		if (!this.pathEl || !this.pathEllipsisEl) return;
 		this.pathSegments.forEach((segment) => segment.classList.remove('fp-path-hidden'));
-		this.pathSegmentSeparators.forEach((separator) => separator.classList.remove('fp-path-hidden'));
+		this.pathSegmentSeparators.forEach((separator) => separator?.classList.remove('fp-path-hidden'));
+		this.pathEllipsisEl.classList.add('fp-path-hidden');
 		this.pathEllipsisEl.setText('');
+		this.ellipsisSeparatorEl?.classList.add('fp-path-hidden');
+		this.ellipsisSeparatorEl?.setText('');
 
+		const minVisible = Math.min(this.pathSegments.length, 2);
+		const maxCollapse = this.pathSegments.length - minVisible;
 		let firstVisibleSegment = 0;
+
 		while (
 			this.pathEl.scrollWidth > this.pathEl.clientWidth &&
-			firstVisibleSegment < this.pathSegments.length - 1
+			firstVisibleSegment < maxCollapse
 		) {
 			this.pathSegments[firstVisibleSegment].classList.add('fp-path-hidden');
 			this.pathSegmentSeparators[firstVisibleSegment]?.classList.add('fp-path-hidden');
+			this.pathEllipsisEl.classList.remove('fp-path-hidden');
 			this.pathEllipsisEl.setText('…');
+			this.ellipsisSeparatorEl?.classList.remove('fp-path-hidden');
+			this.ellipsisSeparatorEl?.setText('/');
 			firstVisibleSegment++;
 		}
 	}
