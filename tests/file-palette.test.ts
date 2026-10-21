@@ -1366,6 +1366,117 @@ describe('file palette picker', () => {
 		workspace.trigger?.('window-close', workspaceWindow, popoutWindow);
 		expect(VaultPathSuggestModal.getActiveModal()).toBeNull();
 	});
+
+	it('caps suggestions to the modal limit when a folder contains more than 100 items', async () => {
+		const largeFolder = addFolder(root, 'large-folder');
+		for (let i = 0; i < 150; i++) {
+			addFile(largeFolder, `bulk-file-${String(i).padStart(3, '0')}.md`);
+		}
+
+		const modal = new VaultPathSuggestModal(app, largeFolder as never);
+		const emptySuggestions = await Promise.resolve(modal.getSuggestions(''));
+		// Has parent folder suggestion + 99 files = 100 total
+		expect(emptySuggestions).toHaveLength(100);
+		expect(emptySuggestions[0]?.isParent).toBe(true);
+
+		const searchSuggestions = await Promise.resolve(modal.getSuggestions('bulk'));
+		expect(searchSuggestions.length).toBeLessThanOrEqual(100);
+	});
+
+	it('does not read metadata cache on empty query when showPropertyMatches is disabled', async () => {
+		const getFileCacheSpy = vi.spyOn(app.metadataCache, 'getFileCache');
+		const modal = new VaultPathSuggestModal(app, currentFolder as never, true, ['title'], false);
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		expect(suggestions.length).toBeGreaterThan(0);
+		expect(getFileCacheSpy).not.toHaveBeenCalled();
+	});
+
+	it('navigates to and stays in the resolved folder on Enter when query is a completed folder path like /lit/lit_notes/', async () => {
+		const litFolder = addFolder(root, 'lit');
+		const litNotesFolder = addFolder(litFolder, 'lit_notes');
+		addFile(litNotesFolder, 'SampleNote.md');
+
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1) as unknown as VaultPathSuggestModal;
+		expect(modal).not.toBeNull();
+
+		modal.inputEl.value = '/lit/lit_notes/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		// Highlight parent entry (or whatever is at index 0)
+		const parentEntry = (await Promise.resolve(modal.getSuggestions('/lit/lit_notes/')))[0];
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(parentEntry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		// Press Enter via onChooseSuggestion (as Obsidian SuggestModal invokes on Enter)
+		modal.onChooseSuggestion(parentEntry, new KeyboardEvent('keydown', { key: 'Enter' }));
+
+		await vi.waitFor(() => {
+			const latestModal = SuggestModal.instances.at(-1) as unknown as VaultPathSuggestModal;
+			expect(latestModal).not.toBe(modal);
+			expect(latestModal.currentLocation.vaultRelPath).toBe('/lit/lit_notes');
+		});
+	});
+
+	it('navigates to target folder when choosing parent suggestion on traversed path query like lit_sources/', async () => {
+		const litFolder = addFolder(root, 'lit');
+		const litSourcesFolder = addFolder(litFolder, 'lit_sources');
+		addFile(litSourcesFolder, 'SourceDoc.md');
+
+		const modal = new VaultPathSuggestModal(app, litFolder as never);
+		modal.inputEl.value = 'lit_sources/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		const suggestions = await Promise.resolve(modal.getSuggestions('lit_sources/'));
+		const parentEntry = suggestions.find((s) => s.isParent);
+		if (!parentEntry) throw new Error('Expected parent entry');
+
+		modal.onChooseSuggestion(parentEntry);
+
+		await vi.waitFor(() => {
+			const latestModal = SuggestModal.instances.at(-1) as unknown as VaultPathSuggestModal;
+			expect(latestModal).not.toBe(modal);
+			expect(latestModal.currentLocation.vaultRelPath).toBe('/lit/lit_sources');
+		});
+	});
+
+	it('resolves parent folder when clicking parent entry with mouse or when query is empty', async () => {
+		const litFolder = addFolder(root, 'lit');
+		const litNotesFolder = addFolder(litFolder, 'lit_notes');
+
+		// Case A: modal opened in /lit/lit_notes with empty query
+		const modalInSubfolder = new VaultPathSuggestModal(app, litNotesFolder as never);
+		const parentEntryA = (await Promise.resolve(modalInSubfolder.getSuggestions(''))).find((s) => s.isParent);
+		if (!parentEntryA) throw new Error('Expected parent entry');
+
+		modalInSubfolder.onChooseSuggestion(parentEntryA);
+
+		await vi.waitFor(() => {
+			const latestModal = SuggestModal.instances.at(-1) as unknown as VaultPathSuggestModal;
+			expect(latestModal).not.toBe(modalInSubfolder);
+			expect(latestModal.currentLocation.vaultRelPath).toBe('/lit');
+		});
+
+		// Case B: modal in root with query /lit/lit_notes/, user explicitly clicks .. with mouse
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1) as unknown as VaultPathSuggestModal;
+		modal.inputEl.value = '/lit/lit_notes/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		const parentEntryB = (await Promise.resolve(modal.getSuggestions('/lit/lit_notes/'))).find((s) => s.isParent);
+		if (!parentEntryB) throw new Error('Expected parent entry');
+
+		modal.onChooseSuggestion(parentEntryB, new MouseEvent('click'));
+
+		await vi.waitFor(() => {
+			const latestModal = SuggestModal.instances.at(-1) as unknown as VaultPathSuggestModal;
+			expect(latestModal).not.toBe(modal);
+			expect(latestModal.currentLocation.vaultRelPath).toBe('/lit');
+		});
+	});
 });
 
 describe('alignFuzzyRanges', () => {

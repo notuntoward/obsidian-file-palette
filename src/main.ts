@@ -48,6 +48,8 @@ export const norm = (p: string): string => {
 	return s === '' && p.startsWith('/') ? '/' : s;
 };
 
+const pathCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
 export function vaultBase(app: App): string | null {
 	const a = app.vault?.adapter;
 	return a instanceof FileSystemAdapter ? norm(a.getBasePath()) : null;
@@ -391,6 +393,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 	private readonly parentEntry: VaultEntry = { file: null, isParent: true };
 	private readonly entryBySuggestion = new WeakMap<HTMLElement, VaultEntry>();
+	private readonly searchDataCache = new Map<string, { fields: SearchableField[]; displayProperties: RawProperty[] }>();
+	limit = 100;
 	private pathEl: HTMLDivElement | null = null;
 	private indicatorEl: HTMLSpanElement | null = null;
 	private pathEllipsisEl: HTMLSpanElement | null = null;
@@ -450,6 +454,24 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			event.preventDefault();
 			void this.copySelectedLink();
 			return;
+		}
+
+		if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+			const rawQuery = this.inputEl.value.trim();
+			if (rawQuery !== '') {
+				const target = this.getQueryLocation(this.inputEl.value);
+				if (target && target.name === '') {
+					const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+					const firstSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item');
+					const isFirst = !selectedSuggestion || selectedSuggestion === firstSuggestion;
+					const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+					if (!entry || entry.isParent || isFirst) {
+						event.preventDefault();
+						this.navigateToLocation(target.location);
+						return;
+					}
+				}
+			}
 		}
 
 		if (event.key === 'Backspace' && this.inputEl.value === '') {
@@ -535,16 +557,36 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 	}
 
-	onChooseSuggestion(entry: VaultEntry): void {
+	onChooseSuggestion(entry: VaultEntry, evt?: MouseEvent | KeyboardEvent): void {
+		const targetLoc = this.getCurrentTargetLocation();
+
+		const rawQuery = this.inputEl?.value.trim() ?? '';
+		const target = this.getQueryLocation(rawQuery);
+		const hasTraversedPath = target && target.name === '' && target.location.absPath !== this.currentLocation.absPath;
+
+		if (hasTraversedPath) {
+			const isMouseClickOnParent = evt instanceof MouseEvent && entry.isParent;
+			if (!isMouseClickOnParent) {
+				const selectedEl = this.resultContainerEl?.querySelector<HTMLElement>('.suggestion-item.is-selected');
+				const firstEl = this.resultContainerEl?.querySelector<HTMLElement>('.suggestion-item');
+				const isFirstSuggestion = !selectedEl || selectedEl === firstEl;
+
+				if (entry.isParent || isFirstSuggestion) {
+					this.navigateToLocation(target.location);
+					return;
+				}
+			}
+		}
+
 		if (entry.isParent) {
-			const parent = this.getParentLocation();
+			const parent = this.getParentLocation(targetLoc);
 			if (parent) this.navigateToLocation(parent);
 			return;
 		}
 
 		const isFolder = entry.isFolder ?? (entry.file instanceof TFolder);
 		if (isFolder) {
-			const nextAbs = entry.absPath ?? (entry.file ? this.makeItemAbsPath(this.currentLocation, entry.file.name) : '');
+			const nextAbs = entry.absPath ?? (entry.file ? this.makeItemAbsPath(targetLoc, entry.file.name) : '');
 			if (nextAbs) {
 				this.navigateToLocation(makeLocation(this.app, nextAbs));
 			}
@@ -595,7 +637,6 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			this.pathResizeObserver = new ResizeObserver(() => this.updatePathTruncation());
 			this.pathResizeObserver.observe(this.pathEl);
 		}
-		this.renderFooter();
 
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
 		this.inputEl.addEventListener('input', this.onInput);
@@ -621,7 +662,11 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.contentEl.empty();
 	}
 
-	private getCapabilities(loc: PaletteLocation = this.currentLocation): LocationCapabilities {
+	private getCurrentTargetLocation(): PaletteLocation {
+		return this.getQueryLocation(this.inputEl?.value ?? '')?.location ?? this.currentLocation;
+	}
+
+	private getCapabilities(loc: PaletteLocation = this.getCurrentTargetLocation()): LocationCapabilities {
 		return {
 			canCreate: loc.inVault,
 			canRevealInSidebar: loc.inVault,
@@ -630,7 +675,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		};
 	}
 
-	private renderFooter(loc: PaletteLocation = this.currentLocation): void {
+	private renderFooter(loc: PaletteLocation = this.getCurrentTargetLocation()): void {
 		let footer = this.modalEl.querySelector<HTMLElement>('.fp-footer');
 		if (!footer) {
 			footer = this.modalEl.createDiv({ cls: 'fp-footer' });
@@ -721,8 +766,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
+		const targetLoc = this.getCurrentTargetLocation();
+
 		try {
-			if (this.currentLocation.inVault && entry.file instanceof TFile) {
+			if (targetLoc.inVault && entry.file instanceof TFile) {
 				const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
 				const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
 				await navigator.clipboard.writeText(link);
@@ -731,7 +778,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 
 			// Outside vault: copy a file:/// link
-			const absPath = entry.absPath ?? (entry.file ? this.makeItemAbsPath(this.currentLocation, entry.file.name) : '');
+			const absPath = entry.absPath ?? (entry.file ? this.makeItemAbsPath(targetLoc, entry.file.name) : '');
 			const fileUri = `file:///${norm(absPath).replace(/^\/+/, '')}`;
 			await navigator.clipboard.writeText(fileUri);
 			new Notice('Link copied to clipboard.');
@@ -1088,6 +1135,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		let firstVisibleSegment = 0;
 
 		while (
+			this.pathEl.clientWidth > 0 &&
 			this.pathEl.scrollWidth > this.pathEl.clientWidth &&
 			firstVisibleSegment < maxCollapse
 		) {
@@ -1126,6 +1174,19 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private getItemSearchData(item: PaletteItem): {
+		fields: SearchableField[];
+		displayProperties: RawProperty[];
+	} {
+		const cacheKey = item.file ? item.file.path : item.absPath;
+		const cached = this.searchDataCache.get(cacheKey);
+		if (cached) return cached;
+
+		const data = this.computeItemSearchData(item);
+		this.searchDataCache.set(cacheKey, data);
+		return data;
+	}
+
+	private computeItemSearchData(item: PaletteItem): {
 		fields: SearchableField[];
 		displayProperties: RawProperty[];
 	} {
@@ -1209,8 +1270,27 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		return { fields, displayProperties };
 	}
 
+	private getDisplayProperties(file: TFile): RawProperty[] {
+		const displayProperties: RawProperty[] = [];
+		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+		if (frontmatter) {
+			for (const property of this.searchProperties) {
+				const value: unknown = frontmatter[property];
+				if (typeof value === 'string') {
+					displayProperties.push({ property, value });
+				} else if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+					const items = value.map((item) => item.trim()).filter(Boolean);
+					if (items.length > 0) {
+						displayProperties.push({ property, value: items.join(', ') });
+					}
+				}
+			}
+		}
+		return displayProperties;
+	}
+
 	private getRawProperties(file: TFile): RawProperty[] {
-		return this.getFileSearchData(file).displayProperties;
+		return this.getDisplayProperties(file);
 	}
 
 	private getFolderFromLocation(loc: PaletteLocation): TFolder | null {
@@ -1223,16 +1303,16 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		return file instanceof TFolder ? file : null;
 	}
 
-	private getParentLocation(): PaletteLocation | null {
-		if (this.currentLocation.inVault && !this.browseOutsideVault) {
-			const folder = this.getFolderFromLocation(this.currentLocation);
+	private getParentLocation(loc: PaletteLocation = this.getCurrentTargetLocation()): PaletteLocation | null {
+		if (loc.inVault && !this.browseOutsideVault) {
+			const folder = this.getFolderFromLocation(loc);
 			if (folder?.parent) {
 				return locationFromFolder(this.app, folder.parent);
 			}
 			return null;
 		}
-		const parentPath = getParentPath(this.currentLocation.absPath);
-		if (parentPath === this.currentLocation.absPath) {
+		const parentPath = getParentPath(loc.absPath);
+		if (parentPath === loc.absPath) {
 			return null;
 		}
 		return makeLocation(this.app, parentPath);
@@ -1244,7 +1324,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private makeItemAbsPath(loc: PaletteLocation, name: string): string {
-		return norm(`${loc.absPath}/${name}`);
+		return loc.absPath === '/' ? `/${name}` : norm(`${loc.absPath}/${name}`);
 	}
 
 	private listVaultFolder(loc: PaletteLocation): PaletteItem[] {
@@ -1299,29 +1379,54 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		targetLocation: PaletteLocation,
 	): VaultEntry[] {
 		const words = queryName.trim().split(/\s+/).filter(Boolean);
+
+		const hasParent = targetLocation.inVault
+			? (this.browseOutsideVault ? getParentPath(targetLocation.absPath) !== targetLocation.absPath : !!this.getFolderFromLocation(targetLocation)?.parent)
+			: (getParentPath(targetLocation.absPath) !== targetLocation.absPath);
+
+		if (!words.length) {
+			const entries: VaultEntry[] = items.map((item) => {
+				const propertyValues =
+					item.file instanceof TFile && this.showPropertyMatches
+						? this.getDisplayProperties(item.file).map(({ property, value }) => ({
+								property,
+								value,
+								match: null,
+						  }))
+						: undefined;
+
+				return {
+					file: item.file,
+					isParent: false,
+					propertyValues,
+					name: item.name,
+					isFolder: item.isFolder,
+					basename: item.basename,
+					extension: item.extension,
+					absPath: item.absPath,
+				};
+			});
+
+			entries.sort((left, right) => {
+				const leftPath = left.file?.path ?? left.absPath ?? '';
+				const rightPath = right.file?.path ?? right.absPath ?? '';
+				return pathCollator.compare(leftPath, rightPath);
+			});
+
+			const maxEntries = hasParent ? this.limit - 1 : this.limit;
+			const suggestions: VaultEntry[] = entries.slice(0, maxEntries);
+
+			if (hasParent) {
+				suggestions.unshift(this.parentEntry);
+			}
+
+			return suggestions;
+		}
+
 		const searchers = words.map((word) => prepareFuzzySearch(word));
 
 		const entries = items.flatMap((item) => {
 			const { fields, displayProperties } = this.getItemSearchData(item);
-
-			if (!words.length) {
-				const propertyValues = (item.file instanceof TFile) && this.showPropertyMatches
-					? displayProperties.map(({ property, value }) => ({ property, value, match: null }))
-					: undefined;
-				return [{
-					entry: {
-						file: item.file,
-						isParent: false,
-						propertyValues,
-						name: item.name,
-						isFolder: item.isFolder,
-						basename: item.basename,
-						extension: item.extension,
-						absPath: item.absPath,
-					},
-					sortedWordMatches: [] as WordMatch[],
-				}];
-			}
 
 			const propertyHitsByProperty = new Map<string, { matches: [number, number][]; scores: number[] }>();
 			if (this.showPropertyMatches) {
@@ -1439,16 +1544,13 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 			const leftPath = left.entry.file?.path ?? left.entry.absPath ?? '';
 			const rightPath = right.entry.file?.path ?? right.entry.absPath ?? '';
-			return leftPath.localeCompare(rightPath);
+			return pathCollator.compare(leftPath, rightPath);
 		});
 
-		const suggestions: VaultEntry[] = entries.map(({ entry }) => entry);
+		const maxEntries = hasParent ? this.limit - 1 : this.limit;
+		const suggestions: VaultEntry[] = entries.slice(0, maxEntries).map(({ entry }) => entry);
 
-		const hasParent = targetLocation.inVault
-			? (this.browseOutsideVault ? getParentPath(targetLocation.absPath) !== targetLocation.absPath : !!this.getFolderFromLocation(targetLocation)?.parent)
-			: (getParentPath(targetLocation.absPath) !== targetLocation.absPath);
-
-		if (hasParent && (!words.length || words.every((word) => prepareFuzzySearch(word)('..')))) {
+		if (hasParent && words.every((word) => prepareFuzzySearch(word)('..'))) {
 			suggestions.unshift(this.parentEntry);
 		}
 
@@ -1477,7 +1579,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				resolvedAbsPath = getParentPath(resolvedAbsPath);
 				continue;
 			}
-			resolvedAbsPath = norm(`${resolvedAbsPath}/${segment}`);
+			resolvedAbsPath = resolvedAbsPath === '/' ? `/${segment}` : norm(`${resolvedAbsPath}/${segment}`);
 		}
 
 		const location = makeLocation(this.app, resolvedAbsPath);

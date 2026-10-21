@@ -192,6 +192,7 @@ export class SuggestModal<T> extends Modal {
 	resultContainerEl: HTMLDivElement;
 	instructions: { command: string; purpose: string }[] = [];
 	placeholder = '';
+	limit = 100;
 
 	constructor(app: any) {
 		super(app);
@@ -222,6 +223,8 @@ export class SuggestModal<T> extends Modal {
 	}
 
 	renderSuggestion(_value: T, _element: HTMLElement): void {}
+
+	onChooseSuggestion(_item: T, _evt: MouseEvent | KeyboardEvent): void {}
 }
 
 export class AbstractInputSuggest<T> {
