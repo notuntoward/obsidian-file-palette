@@ -1,6 +1,7 @@
 import {
 	AbstractInputSuggest,
 	App,
+	FileSystemAdapter,
 	normalizePath,
 	Notice,
 	Platform,
@@ -8,9 +9,11 @@ import {
 	PluginSettingTab,
 	prepareFuzzySearch,
 	renderMatches,
+	setIcon,
 	Setting,
 	SuggestModal,
 	TAbstractFile,
+	TExternalFile,
 	TFile,
 	TFolder,
 } from 'obsidian';
@@ -22,13 +25,91 @@ interface FilePaletteSettings {
 	showCommandTitle: boolean;
 	searchProperties: string[];
 	showPropertyMatches: boolean;
+	browseOutsideVault: boolean;
+	allowCreateOutsideVault: boolean;
 }
 
 const DEFAULT_SETTINGS: FilePaletteSettings = {
 	showCommandTitle: true,
 	searchProperties: ['title'],
 	showPropertyMatches: false,
+	browseOutsideVault: true,
+	allowCreateOutsideVault: false,
 };
+
+export interface PaletteLocation {
+	absPath: string; // always the OS path, normalized (forward slashes)
+	inVault: boolean; // derived, never stored independently
+	vaultRelPath: string | null; // "/Finance" when inVault, else null
+}
+
+export const norm = (p: string): string => {
+	const s = p.replace(/\\/g, '/').replace(/\/+$/, '');
+	return s === '' && p.startsWith('/') ? '/' : s;
+};
+
+export function vaultBase(app: App): string | null {
+	const a = app.vault?.adapter;
+	return a instanceof FileSystemAdapter ? norm(a.getBasePath()) : null;
+}
+
+export function makeLocation(app: App, absPath: string): PaletteLocation {
+	const abs = norm(absPath);
+	const base = vaultBase(app);
+	if (!base) {
+		const vPath = abs.startsWith('/') ? abs : `/${abs}`;
+		return {
+			absPath: abs,
+			inVault: true,
+			vaultRelPath: vPath === '' ? '/' : vPath,
+		};
+	}
+	const ci = Platform.isWin ? (s: string) => s.toLowerCase() : (s: string) => s;
+	const inVault = ci(abs) === ci(base) || ci(abs).startsWith(ci(base) + '/');
+	return {
+		absPath: abs,
+		inVault,
+		vaultRelPath: inVault ? abs.slice(base.length) || '/' : null,
+	};
+}
+
+
+export function getParentPath(abs: string): string {
+	const normalized = norm(abs);
+	if (/^[a-zA-Z]:$/.test(normalized)) {
+		return normalized;
+	}
+	if (normalized === '' || normalized === '/') {
+		return '/';
+	}
+	const lastSlash = normalized.lastIndexOf('/');
+	if (lastSlash < 0) return normalized;
+	if (lastSlash === 0) return '/';
+	return normalized.slice(0, lastSlash);
+}
+
+export function locationFromFolder(app: App, folder: TFolder): PaletteLocation {
+	const base = vaultBase(app);
+	if (base) {
+		const absPath = folder.path ? `${base}/${folder.path}` : base;
+		return makeLocation(app, absPath);
+	}
+	const vPath = folder.path ? (folder.path.startsWith('/') ? folder.path : `/${folder.path}`) : '/';
+	return {
+		absPath: norm(vPath),
+		inVault: true,
+		vaultRelPath: vPath,
+	};
+}
+
+function getFs(): typeof import('fs') | null {
+	if (!Platform.isDesktopApp) return null;
+	try {
+		return require('fs');
+	} catch {
+		return null;
+	}
+}
 
 function normalizeSearchProperties(value: unknown): string[] {
 	if (!Array.isArray(value)) return [...DEFAULT_SETTINGS.searchProperties];
@@ -182,10 +263,31 @@ interface RawProperty {
 	value: string;
 }
 
-interface VaultEntry {
+export interface VaultEntry {
 	file: TAbstractFile | null;
 	isParent: boolean;
 	propertyValues?: PropertyMatch[];
+	name?: string;
+	isFolder?: boolean;
+	basename?: string;
+	extension?: string;
+	absPath?: string;
+}
+
+interface PaletteItem {
+	name: string;
+	isFolder: boolean;
+	basename: string;
+	extension: string;
+	absPath: string;
+	file: TAbstractFile | null;
+}
+
+interface LocationCapabilities {
+	canCreate: boolean;
+	canRevealInSidebar: boolean;
+	canCopyLink: boolean;
+	canOpen: boolean;
 }
 
 interface PropertyMatch {
@@ -203,20 +305,24 @@ type AppWithExternalActions = App & {
 	openWithDefaultApp?: (path: string) => void | Promise<void>;
 };
 
-class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
+export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private readonly parentEntry: VaultEntry = { file: null, isParent: true };
 	private readonly entryBySuggestion = new WeakMap<HTMLElement, VaultEntry>();
 	private pathEl: HTMLDivElement | null = null;
+	private indicatorEl: HTMLSpanElement | null = null;
 	private pathEllipsisEl: HTMLSpanElement | null = null;
 	private pathSegments: HTMLSpanElement[] = [];
 	private pathSegmentSeparators: HTMLSpanElement[] = [];
 	private pathResizeObserver: ResizeObserver | null = null;
+	currentLocation: PaletteLocation;
+
 	private readonly onInput = (): void => {
 		if (this.inputEl.value.startsWith('~')) {
-			this.currentFolder = this.app.vault.getRoot();
+			this.currentLocation = this.getVaultRootLocation();
 		}
 		this.updateCurrentPathDisplay();
 	};
+
 	private readonly onInputKeydown = (event: KeyboardEvent): void => {
 		if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
 			event.preventDefault();
@@ -229,12 +335,17 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && (event.shiftKey || event.altKey)) {
 			const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
 			const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
-			if (entry?.file instanceof TFile) {
-				const destination = event.shiftKey && event.altKey
-					? 'window'
-					: event.shiftKey ? 'tab' : 'split';
-				event.preventDefault();
+			if (!entry || entry.isParent || entry.isFolder || entry.file instanceof TFolder) return;
+			const destination = event.shiftKey && event.altKey
+				? 'window'
+				: event.shiftKey ? 'tab' : 'split';
+			event.preventDefault();
+			if (entry.file instanceof TFile) {
 				this.openInDestination(entry.file, destination);
+				return;
+			}
+			if (entry.absPath) {
+				this.openExternalFile(entry.absPath, destination);
 				return;
 			}
 		}
@@ -257,42 +368,822 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
-		if (event.key === 'Backspace' && this.inputEl.value === '' && this.currentFolder.parent) {
-			event.preventDefault();
-			this.navigateToFolder(this.currentFolder.parent);
+		if (event.key === 'Backspace' && this.inputEl.value === '') {
+			const parent = this.getParentLocation();
+			if (parent) {
+				event.preventDefault();
+				this.navigateToLocation(parent);
+			}
 		}
 	};
 
 	constructor(
 		app: App,
-		private currentFolder: TFolder,
+		locationOrFolder: TFolder | PaletteLocation | string,
 		private readonly showCommandTitle = true,
 		private readonly searchProperties: string[] = DEFAULT_SETTINGS.searchProperties,
 		private readonly showPropertyMatches = DEFAULT_SETTINGS.showPropertyMatches,
+		private readonly browseOutsideVault = DEFAULT_SETTINGS.browseOutsideVault,
+		private readonly allowCreateOutsideVault = DEFAULT_SETTINGS.allowCreateOutsideVault,
 	) {
 		super(app);
+		if (typeof locationOrFolder === 'string') {
+			this.currentLocation = makeLocation(app, locationOrFolder);
+		} else if ('absPath' in locationOrFolder) {
+			this.currentLocation = locationOrFolder;
+		} else {
+			this.currentLocation = locationFromFolder(app, locationOrFolder);
+		}
 		this.setPlaceholder('Search this folder; select a folder to open it');
 	}
 
-	getSuggestions(query: string): VaultEntry[] {
-		const location = this.getQueryFolder(query);
-		if (!location) return [];
-		const { folder, name } = location;
-		const words = name.trim().split(/\s+/).filter(Boolean);
+	get currentFolder(): TFolder {
+		return this.getFolderFromLocation(this.currentLocation) ?? this.app.vault.getRoot();
+	}
+
+	getSuggestions(query: string): VaultEntry[] | Promise<VaultEntry[]> {
+		const target = this.getQueryLocation(query);
+		if (!target) return [];
+		const { location, name } = target;
+
+		if (location.inVault) {
+			const items = this.listVaultFolder(location);
+			return this.filterItems(items, name, location);
+		}
+
+		return this.listFolder(location).then((items) => this.filterItems(items, name, location));
+	}
+
+	renderSuggestion(entry: VaultEntry, element: HTMLElement): void {
+		this.entryBySuggestion.set(element, entry);
+		element.addClass('file-palette-suggestion');
+		if (entry.isParent) {
+			element.setText('.. (parent folder)');
+			return;
+		}
+
+		const isFolder = entry.isFolder ?? (entry.file instanceof TFolder);
+		const name = entry.name ?? entry.file?.name ?? '';
+		const basename = entry.basename ?? (entry.file instanceof TFile ? entry.file.basename : name);
+		const extension = entry.extension ?? (entry.file instanceof TFile ? entry.file.extension : '');
+
+		if (isFolder) {
+			element.createSpan({ cls: 'file-palette-suggestion-name' }).setText(`${name}/`);
+			return;
+		}
+
+		const details = element.createDiv({ cls: 'file-palette-suggestion-details' });
+		details.createDiv({ cls: 'file-palette-suggestion-name' }).setText(basename);
+		if (entry.propertyValues?.length) {
+			const properties = details.createDiv({ cls: 'file-palette-suggestion-properties' });
+			for (const propertyValue of entry.propertyValues) {
+				const propertyEl = properties.createDiv({ cls: 'file-palette-suggestion-property' });
+				propertyEl.createSpan({ cls: 'file-palette-suggestion-property-name' }).setText(`${propertyValue.property}:`);
+				renderMatches(
+					propertyEl.createSpan({ cls: 'file-palette-suggestion-property-value' }),
+					propertyValue.value,
+					propertyValue.match?.matches ?? null,
+				);
+			}
+		}
+		if (extension.toLowerCase() !== 'md' && extension !== '') {
+			element.createSpan({ cls: 'file-palette-suggestion-extension' }).setText(extension.toUpperCase());
+		}
+	}
+
+	onChooseSuggestion(entry: VaultEntry): void {
+		if (entry.isParent) {
+			const parent = this.getParentLocation();
+			if (parent) this.navigateToLocation(parent);
+			return;
+		}
+
+		const isFolder = entry.isFolder ?? (entry.file instanceof TFolder);
+		if (isFolder) {
+			const nextAbs = entry.absPath ?? (entry.file ? this.makeItemAbsPath(this.currentLocation, entry.file.name) : '');
+			if (nextAbs) {
+				this.navigateToLocation(makeLocation(this.app, nextAbs));
+			}
+			return;
+		}
+
+		if (entry.file instanceof TFile) {
+			void this.app.workspace.getLeaf(false).openFile(entry.file);
+			this.close();
+			return;
+		}
+
+		if (entry.absPath) {
+			this.openExternalFile(entry.absPath);
+		}
+	}
+
+	onOpen(): void {
+		super.onOpen();
+		this.modalEl.addClass('file-palette-modal');
+		this.setTitle(this.showCommandTitle ? FILE_PALETTE_TITLE : '');
+		const inputContainer = this.inputEl.parentElement;
+		if (inputContainer) {
+			const header = this.modalEl.createDiv({ cls: 'fp-header' });
+			const title = header.createDiv({ cls: 'fp-title' });
+			title.setText(FILE_PALETTE_TITLE);
+			title.hidden = !this.showCommandTitle;
+			this.pathEl = header.createDiv({ cls: 'fp-path file-palette-current-path palette-path' });
+			this.pathEl.setAttribute('aria-label', 'Current folder path');
+			this.indicatorEl = this.pathEl.createSpan({ cls: 'fp-external-indicator fp-path-hidden' });
+			inputContainer.before(header);
+		}
+		this.updateCurrentPathDisplay();
+		if (this.pathEl && typeof ResizeObserver !== 'undefined') {
+			this.pathResizeObserver = new ResizeObserver(() => this.updatePathTruncation());
+			this.pathResizeObserver.observe(this.pathEl);
+		}
+		this.renderFooter();
+
+		this.inputEl.addEventListener('keydown', this.onInputKeydown);
+		this.inputEl.addEventListener('input', this.onInput);
+	}
+
+	onClose(): void {
+		this.inputEl.removeEventListener('keydown', this.onInputKeydown);
+		this.inputEl.removeEventListener('input', this.onInput);
+		this.pathResizeObserver?.disconnect();
+		this.pathResizeObserver = null;
+		this.modalEl.querySelector('.fp-header')?.remove();
+		this.modalEl.querySelector('.fp-footer')?.remove();
+		this.modalEl.classList.remove('palette-external');
+		this.pathEl = null;
+		this.indicatorEl = null;
+		this.pathEllipsisEl = null;
+		this.pathSegments = [];
+		this.pathSegmentSeparators = [];
+		this.contentEl.empty();
+	}
+
+	private getCapabilities(): LocationCapabilities {
+		return {
+			canCreate: this.currentLocation.inVault || this.allowCreateOutsideVault,
+			canRevealInSidebar: this.currentLocation.inVault,
+			canCopyLink: true,
+			canOpen: true,
+		};
+	}
+
+	private renderFooter(): void {
+		let footer = this.modalEl.querySelector<HTMLElement>('.fp-footer');
+		if (!footer) {
+			footer = this.modalEl.createDiv({ cls: 'fp-footer' });
+			footer.setAttribute('aria-label', 'Keyboard shortcuts');
+		} else {
+			footer.empty();
+		}
+
+		const caps = this.getCapabilities();
+		const modifier = Platform.isMacOS ? '⌘' : 'Ctrl+';
+		const shift = Platform.isMacOS ? '⇧' : 'Shift+';
+		const alternate = Platform.isMacOS ? '⌥' : 'Alt+';
+		const shortcuts = footer.createDiv({ cls: 'fp-footer-shortcuts' });
+		const actions = shortcuts.createDiv({ cls: 'fp-footer-actions' });
+		this.renderHint(actions, 'Tab', 'Complete');
+		this.renderHint(actions, '~', 'Root');
+		this.renderHint(actions, ':', 'Reveal', !caps.canRevealInSidebar);
+		this.renderHint(actions, '?', 'Explorer');
+		this.renderHint(actions, '*', 'App');
+		this.renderHint(actions, `${modifier}${shift}L`, 'Link');
+
+		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
+		this.renderHint(openers, '↵', 'Open');
+		this.renderHint(openers, `${shift}↵`, 'Create', !caps.canCreate);
+		this.renderHint(openers, `${modifier}${shift}↵`, 'New tab');
+		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group');
+		if (!Platform.isMobile) this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window');
+	}
+
+	private renderHint(container: HTMLElement, command: string, purpose: string, disabled = false): void {
+		const hint = container.createDiv({ cls: disabled ? 'fp-hint is-disabled' : 'fp-hint' });
+		if (disabled) {
+			hint.style.opacity = '0.4';
+		}
+		const key = hint.createSpan({ cls: 'fp-hint-command' });
+		key.setText(command);
+		if (command.includes('↵')) {
+			key.setAttribute('title', command.replace('↵', Platform.isMacOS ? 'Return' : 'Enter'));
+		}
+		hint.createSpan({ cls: 'fp-hint-purpose' }).setText(purpose);
+	}
+
+	private completeSelectedSuggestion(): void {
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		if (!entry) return;
+
+		let completedName = '';
+		if (entry.isParent) {
+			completedName = '../';
+		} else if (entry.isFolder || entry.file instanceof TFolder) {
+			completedName = `${entry.name ?? entry.file?.name}/`;
+		} else if (entry.file instanceof TFile || !entry.isFolder) {
+			const ext = entry.extension ?? (entry.file instanceof TFile ? entry.file.extension : '');
+			const base = entry.basename ?? (entry.file instanceof TFile ? entry.file.basename : entry.name ?? '');
+			completedName = ext.toLowerCase() === 'md'
+				? base
+				: (entry.name ?? entry.file?.name ?? '');
+		}
+
+		if (!completedName) return;
+
+		let prefix = '';
+		if (this.inputEl.value.startsWith('~')) {
+			const withoutTilde = this.inputEl.value.slice(1);
+			const slashIndex = withoutTilde.lastIndexOf('/');
+			prefix = slashIndex >= 0 ? `~${withoutTilde.slice(0, slashIndex + 1)}` : '~';
+		} else {
+			const slashIndex = this.inputEl.value.lastIndexOf('/');
+			prefix = slashIndex >= 0 ? this.inputEl.value.slice(0, slashIndex + 1) : '';
+		}
+
+		const nextValue = `${prefix}${completedName}`;
+		this.inputEl.value = nextValue;
+		this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		this.inputEl.setSelectionRange(nextValue.length, nextValue.length);
+	}
+
+	private async copySelectedLink(): Promise<void> {
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		if (!entry || entry.isParent || entry.isFolder || entry.file instanceof TFolder) {
+			new Notice('Select a file to copy its link.');
+			return;
+		}
+		if (!navigator.clipboard?.writeText) {
+			new Notice('Copying links is not available on this device.');
+			return;
+		}
+
+		try {
+			if (this.currentLocation.inVault && entry.file instanceof TFile) {
+				const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
+				const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
+				await navigator.clipboard.writeText(link);
+				new Notice('Link copied to clipboard.');
+				return;
+			}
+
+			// Outside vault: copy a file:/// link
+			const absPath = entry.absPath ?? (entry.file ? this.makeItemAbsPath(this.currentLocation, entry.file.name) : '');
+			const fileUri = `file:///${norm(absPath).replace(/^\/+/, '')}`;
+			await navigator.clipboard.writeText(fileUri);
+			new Notice('Link copied to clipboard.');
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not copy link: ${reason}`);
+		}
+	}
+
+	private openInDestination(file: TFile, destination: 'tab' | 'split' | 'window'): void {
+		if (destination === 'window' && Platform.isMobile) {
+			new Notice('Opening a file in a new window is not available on mobile.');
+			return;
+		}
+
+		try {
+			void this.app.workspace.getLeaf(destination).openFile(file).catch((error: unknown) => {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not open file in a ${destination}: ${reason}`);
+			});
+			this.close();
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not open file in a ${destination}: ${reason}`);
+		}
+	}
+
+	private openExternalFile(absPath: string, destination?: 'tab' | 'split' | 'window'): void {
+		if (destination === 'window' && Platform.isMobile) {
+			new Notice('Opening a file in a new window is not available on mobile.');
+			return;
+		}
+
+		// Try resolving as TExternalFile via vault API
+		const externalFile = this.app.vault.getFileByPath(`file:${absPath}`) ?? this.app.vault.getFileByPath(absPath);
+		if (externalFile instanceof TFile) {
+			if (destination) {
+				this.openInDestination(externalFile, destination);
+			} else {
+				void this.app.workspace.getLeaf(false).openFile(externalFile).catch((error: unknown) => {
+					const reason = error instanceof Error ? error.message : String(error);
+					new Notice(`Could not open file: ${reason}`);
+				});
+				this.close();
+			}
+			return;
+		}
+
+		// Fallback to opening with system default app
+		const app = this.app as AppWithExternalActions;
+		if (app.openWithDefaultApp) {
+			try {
+				void Promise.resolve(app.openWithDefaultApp.call(this.app, absPath)).catch((error: unknown) => {
+					const reason = error instanceof Error ? error.message : String(error);
+					new Notice(`Could not open item with the system default app: ${reason}`);
+				});
+				this.close();
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not open item with the system default app: ${reason}`);
+			}
+		} else {
+			new Notice('Opening items with the system default app is not available on this device.');
+		}
+	}
+
+	private async createNewFileFromQuery(): Promise<void> {
+		const target = this.getQueryLocation(this.inputEl.value);
+		if (!target) {
+			new Notice('The specified folder does not exist.');
+			return;
+		}
+
+		const rawName = target.name.trim();
+		if (!rawName) {
+			new Notice('Enter a file name to create a note.');
+			return;
+		}
+
+		if (/[*\\/<>:|?#^[\]]/.test(rawName)) {
+			new Notice('File name contains invalid characters.');
+			return;
+		}
+
+		const extensionIndex = rawName.lastIndexOf('.');
+		const hasExtension = extensionIndex > 0;
+		const fileName = hasExtension ? rawName : `${rawName}.md`;
+
+		if (target.location.inVault) {
+			const folderPath = target.location.vaultRelPath === '/' ? '' : (target.location.vaultRelPath?.slice(1) ?? '');
+			const fullPath = normalizePath(folderPath ? `${folderPath}/${fileName}` : fileName);
+
+			const existing = this.app.vault.getAbstractFileByPath(fullPath);
+			if (existing instanceof TFile) {
+				new Notice(`"${existing.basename}" already exists — opening file.`);
+				this.close();
+				void this.app.workspace.getLeaf(false).openFile(existing).catch((error: unknown) => {
+					const reason = error instanceof Error ? error.message : String(error);
+					new Notice(`Could not open file: ${reason}`);
+				});
+				return;
+			}
+			if (existing instanceof TFolder) {
+				new Notice(`A folder named "${fileName}" already exists.`);
+				return;
+			}
+
+			try {
+				const newFile = await this.app.vault.create(fullPath, '');
+				this.close();
+				void this.app.workspace.getLeaf(false).openFile(newFile).catch((error: unknown) => {
+					const reason = error instanceof Error ? error.message : String(error);
+					new Notice(`Could not open file: ${reason}`);
+				});
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not create file: ${reason}`);
+			}
+			return;
+		}
+
+		// Outside vault
+		if (!this.allowCreateOutsideVault) {
+			new Notice('Creating files outside the vault is turned off.');
+			return;
+		}
+
+		const fsModule = getFs();
+		if (!fsModule) {
+			new Notice('Creating files outside the vault is not available on this device.');
+			return;
+		}
+
+		const fullPath = norm(`${target.location.absPath}/${fileName}`);
+		try {
+			if (fsModule.existsSync(fullPath)) {
+				const stat = fsModule.statSync(fullPath);
+				if (stat.isDirectory()) {
+					new Notice(`A folder named "${fileName}" already exists.`);
+					return;
+				}
+				const baseNameOnly = hasExtension ? rawName.slice(0, extensionIndex) : rawName;
+				new Notice(`"${baseNameOnly}" already exists — opening file.`);
+				this.close();
+				this.openExternalFile(fullPath);
+				return;
+			}
+
+			await fsModule.promises.writeFile(fullPath, '', 'utf8');
+			this.close();
+			this.openExternalFile(fullPath);
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not create file: ${reason}`);
+		}
+	}
+
+	private runSelectedOperator(operator: ':' | '?' | '*'): void {
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		if (!entry) return;
+
+		const targetLoc = this.getQueryLocation(this.inputEl.value)?.location ?? this.currentLocation;
+
+		if (operator === ':') {
+			if (!targetLoc.inVault) {
+				new Notice('The sidebar only shows vault files.');
+				return;
+			}
+			const folder = this.getFolderFromLocation(targetLoc);
+			const target = entry.isParent ? folder?.parent : entry.file;
+			if (!target) return;
+
+			const fileExplorerLeaf = this.app.workspace.getLeavesOfType('file-explorer')[0];
+			const fileExplorerView = fileExplorerLeaf?.view as
+				| FileExplorerViewLike
+				| undefined;
+			if (!fileExplorerView?.revealInFolder) {
+				new Notice('The Obsidian file navigator is not available.');
+				return;
+			}
+
+			(this.app.workspace as { revealLeaf?: (leaf: unknown) => void }).revealLeaf?.(fileExplorerLeaf);
+			fileExplorerView.revealInFolder(target);
+			this.close();
+			return;
+		}
+
+		let targetPath = '';
+		if (targetLoc.inVault) {
+			const folder = this.getFolderFromLocation(targetLoc);
+			const target = entry.isParent ? folder?.parent : entry.file;
+			if (!target) return;
+			targetPath = target.path;
+		} else {
+			if (entry.isParent) {
+				targetPath = getParentPath(targetLoc.absPath);
+			} else {
+				targetPath = entry.absPath ?? '';
+			}
+			if (Platform.isWin) {
+				targetPath = targetPath.replace(/\//g, '\\');
+			}
+		}
+
+		if (targetPath === undefined) return;
+
+		const app = this.app as AppWithExternalActions;
+		if (operator === '*') {
+			if (!app.openWithDefaultApp) {
+				new Notice('Opening items with the system default app is not available on this device.');
+				return;
+			}
+
+			try {
+				void Promise.resolve(app.openWithDefaultApp.call(this.app, targetPath)).catch((error: unknown) => {
+					const reason = error instanceof Error ? error.message : String(error);
+					new Notice(`Could not open item with the system default app: ${reason}`);
+				});
+				this.close();
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not open item with the system default app: ${reason}`);
+			}
+			return;
+		}
+
+		if (!app.showInFolder) {
+			new Notice('Showing items in System File Explorer is not available on this device.');
+			return;
+		}
+
+		try {
+			void Promise.resolve(app.showInFolder.call(this.app, targetPath)).catch((error: unknown) => {
+				const reason = error instanceof Error ? error.message : String(error);
+				new Notice(`Could not show item in System File Explorer: ${reason}`);
+			});
+			this.close();
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not show item in System File Explorer: ${reason}`);
+		}
+	}
+
+	private updateCurrentPathDisplay(): void {
+		if (!this.pathEl) return;
+		const loc = this.getQueryLocation(this.inputEl.value)?.location ?? this.currentLocation;
+
+		this.modalEl.classList.toggle('palette-external', !loc.inVault);
+
+		this.pathEl.empty();
+		this.indicatorEl = this.pathEl.createSpan({
+			cls: loc.inVault ? 'fp-external-indicator fp-path-hidden' : 'fp-external-indicator',
+		});
+		if (!loc.inVault) {
+			setIcon(this.indicatorEl, 'hard-drive');
+		}
+
+		this.pathEllipsisEl = null;
+		this.pathSegments = [];
+		this.pathSegmentSeparators = [];
+
+		if (loc.inVault) {
+			const segments = (loc.vaultRelPath || '/').split('/').filter(Boolean);
+			const fullPath = segments.length ? `/${segments.join('/')}` : '/';
+			this.pathEl.setAttribute('title', fullPath);
+
+			if (!segments.length) {
+				this.pathEl.createSpan({ cls: 'fp-path-current' }).setText('/');
+				return;
+			}
+
+			this.pathEllipsisEl = this.pathEl.createSpan({ cls: 'fp-path-ellipsis' });
+			this.createPathSeparator('/');
+			for (let index = 0; index < segments.length; index++) {
+				const segment = this.pathEl.createSpan({
+					cls: index === segments.length - 1 ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
+				});
+				segment.setText(segments[index]);
+				this.pathSegments.push(segment);
+				if (index < segments.length - 1) {
+					this.pathSegmentSeparators.push(this.createPathSeparator('/'));
+				}
+			}
+		} else {
+			const sep = Platform.isWin ? '\\' : '/';
+			const displayPath = Platform.isWin ? loc.absPath.replace(/\//g, '\\') : loc.absPath;
+			this.pathEl.setAttribute('title', displayPath);
+
+			const segments = loc.absPath.split('/').filter(Boolean);
+			if (!segments.length) {
+				this.pathEl.createSpan({ cls: 'fp-path-current' }).setText(displayPath);
+				return;
+			}
+
+			this.pathEllipsisEl = this.pathEl.createSpan({ cls: 'fp-path-ellipsis' });
+			if (!Platform.isWin) {
+				this.createPathSeparator('/');
+			}
+			for (let index = 0; index < segments.length; index++) {
+				const segment = this.pathEl.createSpan({
+					cls: index === segments.length - 1 ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
+				});
+				segment.setText(segments[index]);
+				this.pathSegments.push(segment);
+				if (index < segments.length - 1) {
+					this.pathSegmentSeparators.push(this.createPathSeparator(sep));
+				}
+			}
+		}
+
+		this.updatePathTruncation();
+		this.renderFooter();
+	}
+
+	private createPathSeparator(char = '/'): HTMLSpanElement {
+		const separator = this.pathEl?.createSpan({ cls: 'fp-path-separator' });
+		separator?.setText(char);
+		separator?.setAttribute('aria-hidden', 'true');
+		if (!separator) throw new Error('Could not create a folder path separator');
+		return separator;
+	}
+
+	private updatePathTruncation(): void {
+		if (!this.pathEl || !this.pathEllipsisEl) return;
+		this.pathSegments.forEach((segment) => segment.classList.remove('fp-path-hidden'));
+		this.pathSegmentSeparators.forEach((separator) => separator.classList.remove('fp-path-hidden'));
+		this.pathEllipsisEl.setText('');
+
+		let firstVisibleSegment = 0;
+		while (
+			this.pathEl.scrollWidth > this.pathEl.clientWidth &&
+			firstVisibleSegment < this.pathSegments.length - 1
+		) {
+			this.pathSegments[firstVisibleSegment].classList.add('fp-path-hidden');
+			this.pathSegmentSeparators[firstVisibleSegment]?.classList.add('fp-path-hidden');
+			this.pathEllipsisEl.setText('…');
+			firstVisibleSegment++;
+		}
+	}
+
+	private navigateToLocation(location: PaletteLocation): void {
+		this.close();
+		window.setTimeout(() => {
+			new VaultPathSuggestModal(
+				this.app,
+				location,
+				this.showCommandTitle,
+				this.searchProperties,
+				this.showPropertyMatches,
+				this.browseOutsideVault,
+				this.allowCreateOutsideVault,
+			).open();
+		}, 0);
+	}
+
+	private navigateToFolder(folder: TFolder): void {
+		this.navigateToLocation(locationFromFolder(this.app, folder));
+	}
+
+	private getItemSearchData(item: PaletteItem): {
+		fields: SearchableField[];
+		displayProperties: RawProperty[];
+	} {
+		if (item.file) {
+			return this.getFileSearchData(item.file);
+		}
+
+		const fields: SearchableField[] = [];
+		const displayProperties: RawProperty[] = [];
+
+		const text = item.isFolder ? item.name : item.basename;
+		fields.push({
+			text,
+			tokens: tokenize(text),
+			isFilename: true,
+			itemOffset: 0,
+		});
+
+		return { fields, displayProperties };
+	}
+
+	private getFileSearchData(file: TAbstractFile): {
+		fields: SearchableField[];
+		displayProperties: RawProperty[];
+	} {
+		const fields: SearchableField[] = [];
+		const displayProperties: RawProperty[] = [];
+
+		if (file instanceof TFolder) {
+			fields.push({
+				text: file.name,
+				tokens: tokenize(file.name),
+				isFilename: true,
+				itemOffset: 0,
+			});
+			return { fields, displayProperties };
+		}
+
+		if (file instanceof TFile) {
+			fields.push({
+				text: file.basename,
+				tokens: tokenize(file.basename),
+				isFilename: true,
+				itemOffset: 0,
+			});
+
+			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (frontmatter) {
+				for (const property of this.searchProperties) {
+					const value: unknown = frontmatter[property];
+					if (typeof value === 'string') {
+						fields.push({
+							text: value,
+							tokens: tokenize(value),
+							isFilename: false,
+							property,
+							itemOffset: 0,
+						});
+						displayProperties.push({ property, value });
+					} else if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+						const items = value.map((item) => item.trim()).filter(Boolean);
+						if (items.length > 0) {
+							let offset = 0;
+							for (const item of items) {
+								fields.push({
+									text: item,
+									tokens: tokenize(item),
+									isFilename: false,
+									property,
+									itemOffset: offset,
+								});
+								offset += item.length + 2;
+							}
+							displayProperties.push({ property, value: items.join(', ') });
+						}
+					}
+				}
+			}
+		}
+
+		return { fields, displayProperties };
+	}
+
+	private getRawProperties(file: TFile): RawProperty[] {
+		return this.getFileSearchData(file).displayProperties;
+	}
+
+	private getFolderFromLocation(loc: PaletteLocation): TFolder | null {
+		if (!loc.inVault || loc.vaultRelPath === null) return null;
+		if (loc.vaultRelPath === '/' || loc.vaultRelPath === '') {
+			return this.app.vault.getRoot();
+		}
+		const rel = loc.vaultRelPath.replace(/^\/+/, '');
+		const file = this.app.vault.getAbstractFileByPath(rel);
+		return file instanceof TFolder ? file : null;
+	}
+
+	private getParentLocation(): PaletteLocation | null {
+		if (this.currentLocation.inVault && !this.browseOutsideVault) {
+			const folder = this.getFolderFromLocation(this.currentLocation);
+			if (folder?.parent) {
+				return locationFromFolder(this.app, folder.parent);
+			}
+			return null;
+		}
+		const parentPath = getParentPath(this.currentLocation.absPath);
+		if (parentPath === this.currentLocation.absPath) {
+			return null;
+		}
+		return makeLocation(this.app, parentPath);
+	}
+
+	private getVaultRootLocation(): PaletteLocation {
+		const root = this.app.vault.getRoot();
+		return locationFromFolder(this.app, root);
+	}
+
+	private makeItemAbsPath(loc: PaletteLocation, name: string): string {
+		return norm(`${loc.absPath}/${name}`);
+	}
+
+	private listVaultFolder(loc: PaletteLocation): PaletteItem[] {
+		const targetFolder = this.getFolderFromLocation(loc);
+		if (!targetFolder) return [];
+		return targetFolder.children.map((file) => ({
+			name: file.name,
+			isFolder: file instanceof TFolder,
+			basename: file instanceof TFile ? file.basename : file.name,
+			extension: file instanceof TFile ? file.extension : '',
+			absPath: this.makeItemAbsPath(loc, file.name),
+			file,
+		}));
+	}
+
+	private async listFolder(loc: PaletteLocation): Promise<PaletteItem[]> {
+		if (loc.inVault) {
+			return this.listVaultFolder(loc);
+		}
+		if (!Platform.isDesktopApp) return [];
+		const fsModule = getFs();
+		if (!fsModule) return [];
+		try {
+			const dirents = await fsModule.promises.readdir(loc.absPath, { withFileTypes: true });
+			const items: PaletteItem[] = [];
+			for (const dirent of dirents) {
+				const isFolder = dirent.isDirectory();
+				const isFile = dirent.isFile();
+				if (!isFolder && !isFile) continue;
+				const name = dirent.name;
+				const extIndex = name.lastIndexOf('.');
+				const basename = extIndex > 0 ? name.slice(0, extIndex) : name;
+				const extension = extIndex > 0 ? name.slice(extIndex + 1) : '';
+				items.push({
+					name,
+					isFolder,
+					basename,
+					extension,
+					absPath: norm(`${loc.absPath}/${name}`),
+					file: null,
+				});
+			}
+			return items;
+		} catch {
+			return [];
+		}
+	}
+
+	private filterItems(
+		items: PaletteItem[],
+		queryName: string,
+		targetLocation: PaletteLocation,
+	): VaultEntry[] {
+		const words = queryName.trim().split(/\s+/).filter(Boolean);
 		const searchers = words.map((word) => prepareFuzzySearch(word));
 
-		const entries = folder.children.flatMap((file) => {
-			const { fields, displayProperties } = this.getFileSearchData(file);
+		const entries = items.flatMap((item) => {
+			const { fields, displayProperties } = this.getItemSearchData(item);
 
 			if (!words.length) {
-				const propertyValues = file instanceof TFile && this.showPropertyMatches
+				const propertyValues = (item.file instanceof TFile) && this.showPropertyMatches
 					? displayProperties.map(({ property, value }) => ({ property, value, match: null }))
 					: undefined;
 				return [{
 					entry: {
-						file,
+						file: item.file,
 						isParent: false,
 						propertyValues,
+						name: item.name,
+						isFolder: item.isFolder,
+						basename: item.basename,
+						extension: item.extension,
+						absPath: item.absPath,
 					},
 					sortedWordMatches: [] as WordMatch[],
 				}];
@@ -392,9 +1283,14 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 			return [{
 				entry: {
-					file,
+					file: item.file,
 					isParent: false,
 					propertyValues,
+					name: item.name,
+					isFolder: item.isFolder,
+					basename: item.basename,
+					extension: item.extension,
+					absPath: item.absPath,
 				},
 				sortedWordMatches,
 			}];
@@ -407,492 +1303,55 @@ class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 					return -diff;
 				}
 			}
-			const leftPath = left.entry.file?.path ?? '';
-			const rightPath = right.entry.file?.path ?? '';
+			const leftPath = left.entry.file?.path ?? left.entry.absPath ?? '';
+			const rightPath = right.entry.file?.path ?? right.entry.absPath ?? '';
 			return leftPath.localeCompare(rightPath);
 		});
+
 		const suggestions: VaultEntry[] = entries.map(({ entry }) => entry);
 
-		if (folder.parent && (!words.length || words.every((word) => prepareFuzzySearch(word)('..')))) {
+		const hasParent = targetLocation.inVault
+			? (this.browseOutsideVault ? getParentPath(targetLocation.absPath) !== targetLocation.absPath : !!this.getFolderFromLocation(targetLocation)?.parent)
+			: (getParentPath(targetLocation.absPath) !== targetLocation.absPath);
+
+		if (hasParent && (!words.length || words.every((word) => prepareFuzzySearch(word)('..')))) {
 			suggestions.unshift(this.parentEntry);
 		}
 
 		return suggestions;
 	}
 
-	renderSuggestion(entry: VaultEntry, element: HTMLElement): void {
-		this.entryBySuggestion.set(element, entry);
-		element.addClass('file-palette-suggestion');
-		if (entry.isParent) {
-			element.setText('.. (parent folder)');
-			return;
-		}
-
-		const file = entry.file;
-		if (!file) return;
-		if (file instanceof TFolder) {
-			element.createSpan({ cls: 'file-palette-suggestion-name' }).setText(`${file.name}/`);
-			return;
-		}
-
-		if (!(file instanceof TFile)) return;
-		const details = element.createDiv({ cls: 'file-palette-suggestion-details' });
-		details.createDiv({ cls: 'file-palette-suggestion-name' }).setText(file.basename);
-		if (entry.propertyValues?.length) {
-			const properties = details.createDiv({ cls: 'file-palette-suggestion-properties' });
-			for (const propertyValue of entry.propertyValues) {
-				const propertyEl = properties.createDiv({ cls: 'file-palette-suggestion-property' });
-				propertyEl.createSpan({ cls: 'file-palette-suggestion-property-name' }).setText(`${propertyValue.property}:`);
-				renderMatches(
-					propertyEl.createSpan({ cls: 'file-palette-suggestion-property-value' }),
-					propertyValue.value,
-					propertyValue.match?.matches ?? null,
-				);
-			}
-		}
-		if (file.extension.toLowerCase() !== 'md') {
-			element.createSpan({ cls: 'file-palette-suggestion-extension' }).setText(file.extension.toUpperCase());
-		}
-	}
-
-	onChooseSuggestion(entry: VaultEntry): void {
-		if (entry.isParent) {
-			if (this.currentFolder.parent) this.navigateToFolder(this.currentFolder.parent);
-			return;
-		}
-
-		if (entry.file instanceof TFolder) {
-			this.navigateToFolder(entry.file);
-			return;
-		}
-
-		if (entry.file instanceof TFile) {
-			void this.app.workspace.getLeaf(false).openFile(entry.file);
-			this.close();
-		}
-	}
-
-	onOpen(): void {
-		super.onOpen();
-		this.modalEl.addClass('file-palette-modal');
-		this.setTitle(this.showCommandTitle ? FILE_PALETTE_TITLE : '');
-		const inputContainer = this.inputEl.parentElement;
-		if (inputContainer) {
-			const header = this.modalEl.createDiv({ cls: 'fp-header' });
-			const title = header.createDiv({ cls: 'fp-title' });
-			title.setText(FILE_PALETTE_TITLE);
-			title.hidden = !this.showCommandTitle;
-			this.pathEl = header.createDiv({ cls: 'fp-path file-palette-current-path' });
-			this.pathEl.setAttribute('aria-label', 'Current folder path');
-			inputContainer.before(header);
-		}
-		this.updateCurrentPathDisplay();
-		if (this.pathEl && typeof ResizeObserver !== 'undefined') {
-			this.pathResizeObserver = new ResizeObserver(() => this.updatePathTruncation());
-			this.pathResizeObserver.observe(this.pathEl);
-		}
-		this.renderFooter();
-
-		this.inputEl.addEventListener('keydown', this.onInputKeydown);
-		this.inputEl.addEventListener('input', this.onInput);
-	}
-	onClose(): void {
-		this.inputEl.removeEventListener('keydown', this.onInputKeydown);
-		this.inputEl.removeEventListener('input', this.onInput);
-		this.pathResizeObserver?.disconnect();
-		this.pathResizeObserver = null;
-		this.modalEl.querySelector('.fp-header')?.remove();
-		this.modalEl.querySelector('.fp-footer')?.remove();
-		this.pathEl = null;
-		this.pathEllipsisEl = null;
-		this.pathSegments = [];
-		this.pathSegmentSeparators = [];
-		this.contentEl.empty();
-	}
-
-	private renderFooter(): void {
-		const footer = this.modalEl.createDiv({ cls: 'fp-footer' });
-		footer.setAttribute('aria-label', 'Keyboard shortcuts');
-		const modifier = Platform.isMacOS ? '⌘' : 'Ctrl+';
-		const shift = Platform.isMacOS ? '⇧' : 'Shift+';
-		const alternate = Platform.isMacOS ? '⌥' : 'Alt+';
-		const shortcuts = footer.createDiv({ cls: 'fp-footer-shortcuts' });
-		const actions = shortcuts.createDiv({ cls: 'fp-footer-actions' });
-		this.renderHint(actions, 'Tab', 'Complete');
-		this.renderHint(actions, '~', 'Root');
-		this.renderHint(actions, ':', 'Reveal');
-		this.renderHint(actions, '?', 'Explorer');
-		this.renderHint(actions, '*', 'App');
-		this.renderHint(actions, `${modifier}${shift}L`, 'Link');
-
-		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
-		this.renderHint(openers, '↵', 'Open');
-		this.renderHint(openers, `${shift}↵`, 'Create');
-		this.renderHint(openers, `${modifier}${shift}↵`, 'New tab');
-		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group');
-		if (!Platform.isMobile) this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window');
-	}
-
-	private completeSelectedSuggestion(): void {
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
-		if (!entry) return;
-
-		let completedName = '';
-		if (entry.isParent) {
-			completedName = '../';
-		} else if (entry.file instanceof TFolder) {
-			completedName = `${entry.file.name}/`;
-		} else if (entry.file instanceof TFile) {
-			completedName = entry.file.extension.toLowerCase() === 'md'
-				? entry.file.basename
-				: entry.file.name;
-		}
-
-		if (!completedName) return;
-
-		let prefix = '';
-		if (this.inputEl.value.startsWith('~')) {
-			const withoutTilde = this.inputEl.value.slice(1);
-			const slashIndex = withoutTilde.lastIndexOf('/');
-			prefix = slashIndex >= 0 ? `~${withoutTilde.slice(0, slashIndex + 1)}` : '~';
-		} else {
-			const slashIndex = this.inputEl.value.lastIndexOf('/');
-			prefix = slashIndex >= 0 ? this.inputEl.value.slice(0, slashIndex + 1) : '';
-		}
-
-		const nextValue = `${prefix}${completedName}`;
-		this.inputEl.value = nextValue;
-		this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-		this.inputEl.setSelectionRange(nextValue.length, nextValue.length);
-	}
-
-	private renderHint(container: HTMLElement, command: string, purpose: string): void {
-		const hint = container.createDiv({ cls: 'fp-hint' });
-		const key = hint.createSpan({ cls: 'fp-hint-command' });
-		key.setText(command);
-		if (command.includes('↵')) {
-			key.setAttribute('title', command.replace('↵', Platform.isMacOS ? 'Return' : 'Enter'));
-		}
-		hint.createSpan({ cls: 'fp-hint-purpose' }).setText(purpose);
-	}
-
-	private async copySelectedLink(): Promise<void> {
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
-		if (!entry?.file) return;
-		if (!(entry.file instanceof TFile)) {
-			new Notice('Select a file to copy its link.');
-			return;
-		}
-		if (!navigator.clipboard?.writeText) {
-			new Notice('Copying links is not available on this device.');
-			return;
-		}
-
-		try {
-			const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
-			const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
-			await navigator.clipboard.writeText(link);
-			new Notice('Link copied to clipboard.');
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			new Notice(`Could not copy link: ${reason}`);
-		}
-	}
-
-	private openInDestination(file: TFile, destination: 'tab' | 'split' | 'window'): void {
-		if (destination === 'window' && Platform.isMobile) {
-			new Notice('Opening a file in a new window is not available on mobile.');
-			return;
-		}
-
-		try {
-			void this.app.workspace.getLeaf(destination).openFile(file).catch((error: unknown) => {
-				const reason = error instanceof Error ? error.message : String(error);
-				new Notice(`Could not open file in a ${destination}: ${reason}`);
-			});
-			this.close();
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			new Notice(`Could not open file in a ${destination}: ${reason}`);
-		}
-	}
-
-	private async createNewFileFromQuery(): Promise<void> {
-		const location = this.getQueryFolder(this.inputEl.value);
-		if (!location) {
-			new Notice('The specified folder does not exist.');
-			return;
-		}
-
-		const rawName = location.name.trim();
-		if (!rawName) {
-			new Notice('Enter a file name to create a note.');
-			return;
-		}
-
-		if (/[*\\/<>:|?#^[\]]/.test(rawName)) {
-			new Notice('File name contains invalid characters.');
-			return;
-		}
-
-		const extensionIndex = rawName.lastIndexOf('.');
-		const hasExtension = extensionIndex > 0;
-		const fileName = hasExtension ? rawName : `${rawName}.md`;
-		const folderPath = location.folder.path;
-		const fullPath = normalizePath(folderPath ? `${folderPath}/${fileName}` : fileName);
-
-		const existing = this.app.vault.getAbstractFileByPath(fullPath);
-		if (existing instanceof TFile) {
-			new Notice(`"${existing.basename}" already exists — opening file.`);
-			this.close();
-			void this.app.workspace.getLeaf(false).openFile(existing).catch((error: unknown) => {
-				const reason = error instanceof Error ? error.message : String(error);
-				new Notice(`Could not open file: ${reason}`);
-			});
-			return;
-		}
-		if (existing instanceof TFolder) {
-			new Notice(`A folder named "${fileName}" already exists.`);
-			return;
-		}
-
-		try {
-			const newFile = await this.app.vault.create(fullPath, '');
-			this.close();
-			void this.app.workspace.getLeaf(false).openFile(newFile).catch((error: unknown) => {
-				const reason = error instanceof Error ? error.message : String(error);
-				new Notice(`Could not open file: ${reason}`);
-			});
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			new Notice(`Could not create file: ${reason}`);
-		}
-	}
-
-	private runSelectedOperator(operator: ':' | '?' | '*'): void {
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
-		if (!entry) return;
-		const folder = this.getQueryFolder(this.inputEl.value)?.folder ?? this.currentFolder;
-		const target = entry.isParent ? folder.parent : entry.file;
-		if (!target) return;
-
-		if (operator === ':') {
-			const fileExplorerLeaf = this.app.workspace.getLeavesOfType('file-explorer')[0];
-			const fileExplorerView = fileExplorerLeaf?.view as
-				| FileExplorerViewLike
-				| undefined;
-			if (!fileExplorerView?.revealInFolder) {
-				new Notice('The Obsidian file navigator is not available.');
-				return;
-			}
-
-			(this.app.workspace as { revealLeaf?: (leaf: unknown) => void }).revealLeaf?.(fileExplorerLeaf);
-			fileExplorerView.revealInFolder(target);
-			this.close();
-			return;
-		}
-
-		const app = this.app as AppWithExternalActions;
-		if (operator === '*') {
-			if (!app.openWithDefaultApp) {
-				new Notice('Opening items with the system default app is not available on this device.');
-				return;
-			}
-
-			try {
-				void Promise.resolve(app.openWithDefaultApp.call(this.app, target.path)).catch((error: unknown) => {
-					const reason = error instanceof Error ? error.message : String(error);
-					new Notice(`Could not open item with the system default app: ${reason}`);
-				});
-				this.close();
-			} catch (error) {
-				const reason = error instanceof Error ? error.message : String(error);
-				new Notice(`Could not open item with the system default app: ${reason}`);
-			}
-			return;
-		}
-
-		if (!app.showInFolder) {
-			new Notice('Showing items in System File Explorer is not available on this device.');
-			return;
-		}
-
-		try {
-			void Promise.resolve(app.showInFolder.call(this.app, target.path)).catch((error: unknown) => {
-				const reason = error instanceof Error ? error.message : String(error);
-				new Notice(`Could not show item in System File Explorer: ${reason}`);
-			});
-			this.close();
-		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			new Notice(`Could not show item in System File Explorer: ${reason}`);
-		}
-	}
-
-	private updateCurrentPathDisplay(): void {
-		if (!this.pathEl) return;
-		const folder = this.getQueryFolder(this.inputEl.value)?.folder ?? this.currentFolder;
-		const segments = folder.path.split('/').filter(Boolean);
-		const fullPath = segments.length ? `/${segments.join('/')}` : '/';
-		this.pathEl.empty();
-		this.pathEl.setAttribute('title', fullPath);
-		this.pathEllipsisEl = null;
-		this.pathSegments = [];
-		this.pathSegmentSeparators = [];
-
-		if (!segments.length) {
-			this.pathEl.createSpan({ cls: 'fp-path-current' }).setText('/');
-			return;
-		}
-
-		this.pathEllipsisEl = this.pathEl.createSpan({ cls: 'fp-path-ellipsis' });
-		this.createPathSeparator();
-		for (let index = 0; index < segments.length; index++) {
-			const segment = this.pathEl.createSpan({
-				cls: index === segments.length - 1 ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
-			});
-			segment.setText(segments[index]);
-			this.pathSegments.push(segment);
-			if (index < segments.length - 1) {
-				this.pathSegmentSeparators.push(this.createPathSeparator());
-			}
-		}
-		this.updatePathTruncation();
-	}
-
-	private createPathSeparator(): HTMLSpanElement {
-		const separator = this.pathEl?.createSpan({ cls: 'fp-path-separator' });
-		separator?.setText('/');
-		separator?.setAttribute('aria-hidden', 'true');
-		if (!separator) throw new Error('Could not create a folder path separator');
-		return separator;
-	}
-
-	private updatePathTruncation(): void {
-		if (!this.pathEl || !this.pathEllipsisEl) return;
-		this.pathSegments.forEach((segment) => segment.classList.remove('fp-path-hidden'));
-		this.pathSegmentSeparators.forEach((separator) => separator.classList.remove('fp-path-hidden'));
-		this.pathEllipsisEl.setText('');
-
-		let firstVisibleSegment = 0;
-		while (
-			this.pathEl.scrollWidth > this.pathEl.clientWidth &&
-			firstVisibleSegment < this.pathSegments.length - 1
-		) {
-			this.pathSegments[firstVisibleSegment].classList.add('fp-path-hidden');
-			this.pathSegmentSeparators[firstVisibleSegment]?.classList.add('fp-path-hidden');
-			this.pathEllipsisEl.setText('…');
-			firstVisibleSegment++;
-		}
-	}
-
-	private navigateToFolder(folder: TFolder): void {
-		this.close();
-		window.setTimeout(() => {
-			new VaultPathSuggestModal(
-				this.app,
-				folder,
-				this.showCommandTitle,
-				this.searchProperties,
-				this.showPropertyMatches,
-			).open();
-		}, 0);
-	}
-
-	private getFileSearchData(file: TAbstractFile): {
-		fields: SearchableField[];
-		displayProperties: RawProperty[];
-	} {
-		const fields: SearchableField[] = [];
-		const displayProperties: RawProperty[] = [];
-
-		if (file instanceof TFolder) {
-			fields.push({
-				text: file.name,
-				tokens: tokenize(file.name),
-				isFilename: true,
-				itemOffset: 0,
-			});
-			return { fields, displayProperties };
-		}
-
-		if (file instanceof TFile) {
-			fields.push({
-				text: file.basename,
-				tokens: tokenize(file.basename),
-				isFilename: true,
-				itemOffset: 0,
-			});
-
-			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-			if (frontmatter) {
-				for (const property of this.searchProperties) {
-					const value: unknown = frontmatter[property];
-					if (typeof value === 'string') {
-						fields.push({
-							text: value,
-							tokens: tokenize(value),
-							isFilename: false,
-							property,
-							itemOffset: 0,
-						});
-						displayProperties.push({ property, value });
-					} else if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
-						const items = value.map((item) => item.trim()).filter(Boolean);
-						if (items.length > 0) {
-							let offset = 0;
-							for (const item of items) {
-								fields.push({
-									text: item,
-									tokens: tokenize(item),
-									isFilename: false,
-									property,
-									itemOffset: offset,
-								});
-								offset += item.length + 2;
-							}
-							displayProperties.push({ property, value: items.join(', ') });
-						}
-					}
-				}
-			}
-		}
-
-		return { fields, displayProperties };
-	}
-
-	private getRawProperties(file: TFile): RawProperty[] {
-		return this.getFileSearchData(file).displayProperties;
-	}
-
-	private getQueryFolder(query: string): { folder: TFolder; name: string } | null {
+	private getQueryLocation(query: string): { location: PaletteLocation; name: string } | null {
 		const absoluteRoot = query.startsWith('~');
 		const normalizedQuery = absoluteRoot ? query.slice(1) : query;
-		const folder = absoluteRoot || normalizedQuery.startsWith('/') ? this.app.vault.getRoot() : this.currentFolder;
-		const lastSeparator = normalizedQuery.lastIndexOf('/');
-		if (lastSeparator < 0) return { folder, name: normalizedQuery };
+		const baseLocation = absoluteRoot || (this.currentLocation.inVault && normalizedQuery.startsWith('/'))
+			? this.getVaultRootLocation()
+			: this.currentLocation;
 
-		const path = normalizedQuery.slice(0, lastSeparator);
+		const lastSeparator = normalizedQuery.lastIndexOf('/');
+		if (lastSeparator < 0) return { location: baseLocation, name: normalizedQuery };
+
+		const subPath = normalizedQuery.slice(0, lastSeparator);
 		const name = normalizedQuery.slice(lastSeparator + 1);
-		let targetFolder = folder;
-		const relativePath = normalizedQuery.startsWith('/') ? path.slice(1) : path;
+
+		let resolvedAbsPath = baseLocation.absPath;
+		const relativePath = normalizedQuery.startsWith('/') ? subPath.slice(1) : subPath;
 
 		for (const segment of relativePath.split('/').filter(Boolean)) {
 			if (segment === '.') continue;
 			if (segment === '..') {
-				if (targetFolder.parent) targetFolder = targetFolder.parent;
+				resolvedAbsPath = getParentPath(resolvedAbsPath);
 				continue;
 			}
-
-			const child = targetFolder.children.find((file) => file.name === segment);
-			if (!(child instanceof TFolder)) return null;
-			targetFolder = child;
+			resolvedAbsPath = norm(`${resolvedAbsPath}/${segment}`);
 		}
 
-		return { folder: targetFolder, name };
+		const location = makeLocation(this.app, resolvedAbsPath);
+		if (location.inVault) {
+			const folder = this.getFolderFromLocation(location);
+			if (!folder) return null;
+		}
+		return { location, name };
 	}
 }
 
@@ -912,10 +1371,12 @@ export default class FilePalettePlugin extends Plugin {
 			callback: () => {
 				new VaultPathSuggestModal(
 					this.app,
-					this.getActiveFolder(),
+					this.getActiveLocation(),
 					this.settings.showCommandTitle,
 					this.settings.searchProperties,
 					this.settings.showPropertyMatches,
+					this.settings.browseOutsideVault,
+					this.settings.allowCreateOutsideVault,
 				).open();
 			},
 		});
@@ -942,7 +1403,68 @@ export default class FilePalettePlugin extends Plugin {
 			typeof settings.showPropertyMatches === 'boolean'
 				? settings.showPropertyMatches
 				: DEFAULT_SETTINGS.showPropertyMatches;
-		this.settings = { showCommandTitle, searchProperties, showPropertyMatches };
+		const browseOutsideVault =
+			'browseOutsideVault' in settings &&
+			typeof settings.browseOutsideVault === 'boolean'
+				? settings.browseOutsideVault
+				: DEFAULT_SETTINGS.browseOutsideVault;
+		const allowCreateOutsideVault =
+			'allowCreateOutsideVault' in settings &&
+			typeof settings.allowCreateOutsideVault === 'boolean'
+				? settings.allowCreateOutsideVault
+				: DEFAULT_SETTINGS.allowCreateOutsideVault;
+		this.settings = {
+			showCommandTitle,
+			searchProperties,
+			showPropertyMatches,
+			browseOutsideVault,
+			allowCreateOutsideVault,
+		};
+	}
+
+	private getActiveLocation(): PaletteLocation {
+		const base = vaultBase(this.app);
+		const vaultRoot = this.app.vault.getRoot();
+		const vaultRootLocation = base
+			? makeLocation(this.app, base)
+			: locationFromFolder(this.app, vaultRoot);
+
+		if (!this.settings.browseOutsideVault) {
+			const activeFile = this.app.workspace.getActiveFile();
+			if (activeFile && !(activeFile instanceof TExternalFile) && !activeFile.path.startsWith('file:')) {
+				return locationFromFolder(this.app, activeFile.parent ?? vaultRoot);
+			}
+			return vaultRootLocation;
+		}
+
+		const activeFile = this.app.workspace.getActiveFile();
+		if (!activeFile) {
+			return vaultRootLocation;
+		}
+
+		let fileAbsPath: string | null = null;
+		if (activeFile instanceof TExternalFile || typeof (activeFile as unknown as { getRealPath?: () => string }).getRealPath === 'function') {
+			fileAbsPath = norm((activeFile as unknown as { getRealPath: () => string }).getRealPath());
+		} else if (activeFile.path.startsWith('file:')) {
+			fileAbsPath = norm(activeFile.path.slice(5));
+		} else {
+			const leaf = this.app.workspace.getMostRecentLeaf?.() ?? null;
+			const viewStateFile = (leaf?.view?.getState?.() as { file?: string } | undefined)?.file;
+			if (typeof viewStateFile === 'string' && viewStateFile.startsWith('file:')) {
+				fileAbsPath = norm(viewStateFile.slice(5));
+			} else if (base) {
+				fileAbsPath = norm(`${base}/${activeFile.path}`);
+			} else {
+				return locationFromFolder(this.app, activeFile.parent ?? vaultRoot);
+			}
+		}
+
+		if (!fileAbsPath) {
+			return vaultRootLocation;
+		}
+
+		const parentAbsPath = getParentPath(fileAbsPath);
+		return makeLocation(this.app, parentAbsPath);
 	}
 
 	private getActiveFolder(): TFolder {
@@ -1107,17 +1629,44 @@ class FilePaletteSettingTab extends PluginSettingTab {
 					defaultValue: DEFAULT_SETTINGS.showPropertyMatches,
 				},
 			},
+			{
+				name: 'Browse outside vault',
+				desc: 'Allow the palette to open in and navigate to folders outside the vault. When off, the palette stays inside the vault as before.',
+				control: {
+					type: 'toggle',
+					key: 'browseOutsideVault',
+					defaultValue: DEFAULT_SETTINGS.browseOutsideVault,
+				},
+			},
+			{
+				name: 'Allow creating files outside vault',
+				desc: 'Let Shift+Enter create files while browsing outside the vault.',
+				control: {
+					type: 'toggle',
+					key: 'allowCreateOutsideVault',
+					defaultValue: DEFAULT_SETTINGS.allowCreateOutsideVault,
+				},
+			},
 		];
 	}
 
 	getControlValue(key: string): unknown {
 		if (key === 'showCommandTitle') return this.plugin.settings.showCommandTitle;
 		if (key === 'showPropertyMatches') return this.plugin.settings.showPropertyMatches;
+		if (key === 'browseOutsideVault') return this.plugin.settings.browseOutsideVault;
+		if (key === 'allowCreateOutsideVault') return this.plugin.settings.allowCreateOutsideVault;
 		return undefined;
 	}
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
-		if ((key !== 'showCommandTitle' && key !== 'showPropertyMatches') || typeof value !== 'boolean') return;
+		if (
+			(key !== 'showCommandTitle' &&
+				key !== 'showPropertyMatches' &&
+				key !== 'browseOutsideVault' &&
+				key !== 'allowCreateOutsideVault') ||
+			typeof value !== 'boolean'
+		)
+			return;
 		const previousValue = this.plugin.settings[key];
 		this.plugin.settings[key] = value;
 		try {

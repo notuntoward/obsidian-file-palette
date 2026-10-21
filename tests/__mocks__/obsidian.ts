@@ -151,7 +151,14 @@ export class Notice {
 	hide(): void {}
 }
 
-export const Platform = { isMobile: false, isMacOS: false };
+export const Platform = { isMobile: false, isMacOS: false, isDesktopApp: true, isWin: true };
+
+export class FileSystemAdapter {
+	constructor(private basePath: string = '') {}
+	getBasePath(): string {
+		return this.basePath;
+	}
+}
 
 export class Modal {
 	app: any;
@@ -293,6 +300,19 @@ export class TFile extends TAbstractFile {
 	}
 }
 
+export class TExternalFile extends TFile {
+	constructor(name: string, path: string, private realPath: string) {
+		super(name, path);
+	}
+	getRealPath(): string {
+		return this.realPath;
+	}
+}
+
+export function setIcon(parent: HTMLElement, iconId: string): void {
+	parent.setAttribute('data-icon', iconId);
+}
+
 export function normalizePath(path: string): string {
 	return path
 		.replace(/\\/g, '/')
@@ -357,6 +377,11 @@ function installDomHelpers(): void {
 		addClass: {
 			value(this: HTMLElement, ...classes: string[]): void {
 				this.classList.add(...classes);
+			},
+		},
+		toggleClass: {
+			value(this: HTMLElement, className: string, value?: boolean): boolean {
+				return this.classList.toggle(className, value);
 			},
 		},
 		empty: {

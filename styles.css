@@ -169,3 +169,23 @@
 	text-decoration: none;
 }
 
+.file-palette-modal.palette-external .prompt-input {
+	border-left: 3px solid var(--text-faint);
+}
+
+.file-palette-modal.palette-external .fp-path,
+.file-palette-modal.palette-external .palette-path {
+	color: var(--text-muted);
+}
+
+.fp-external-indicator {
+	display: inline-flex;
+	align-items: center;
+	margin-inline-end: var(--size-4-1);
+	color: var(--text-muted);
+}
+
+.fp-hint.is-disabled {
+	opacity: 0.4;
+}
+

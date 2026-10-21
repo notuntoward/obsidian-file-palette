@@ -12,7 +12,7 @@ A fast file and folder picker for jumping to files and browsing folders.
 | Key | Action |
 | --- | --- |
 | Up / Down | Highlight a suggestion |
-| Enter | Open in current tab or browse into a folder|
+| Enter | Open in current tab or browse into a folder |
 | Shift+Enter | Create a new file in the current folder using the search query |
 | Ctrl+Shift+Enter; Cmd+Shift+Enter | Open in a new tab |
 | Ctrl+Alt+Enter; Cmd+Option+Enter | Open in a new tab group |
@@ -22,7 +22,31 @@ A fast file and folder picker for jumping to files and browsing folders.
 | `:` | Reveal the highlighted file or folder (including `..`) in Obsidian's file navigation sidebar |
 | `?` | Show the highlighted file or folder (including `..`) in your system file explorer (Finder or Windows Explorer) |
 | `*` | Open the highlighted file or folder with your system default app |
-| Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link in the vault's configured format |
+| Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link |
+| `~` | Return immediately to the vault root |
+
+
+## External Files & Folders
+
+Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. When editing an external note, File Palette automatically tracks reality:
+
+- **Location tracks reality**: The palette opens in the active file’s real OS folder and shows the OS path (e.g. `C:\Users\scott\repos\docs`).
+- **Indicator marks the exception**: Inside the vault, paths stay vault-relative (`/Finance/`) with no badge or indicator. Outside the vault, a subtle hard-drive indicator appears and disabled footer shortcuts are dimmed.
+- **Quick return**: Typing `~` at any point returns straight to the vault root and clears the external indicator.
+- **Navigation**: Selecting `..` or pressing Backspace in an empty search navigates up the folder hierarchy up to the drive root.
+
+### Outside-the-Vault Capabilities
+
+| Key | Inside Vault | Outside Vault |
+| --- | --- | --- |
+| Enter on file | Opens file in active leaf | Opens file using Obsidian's external file mechanism (falls back to default app) |
+| Shift+Enter (create) | Creates note in vault | Disabled by default (shows notice; toggleable in settings) |
+| Ctrl+Shift+L (link) | Copies vault markdown link | Copies `file:///` URI link |
+| `:` (sidebar) | Reveals item in file navigation sidebar | Disabled (the sidebar only displays vault files) |
+| `?` (explorer) | Shows in system file explorer | Shows in system file explorer |
+| `*` (app) | Opens in system default app | Opens in system default app |
+| Tab, Backspace, `..` | Navigate and complete | Navigate and complete |
+| `~` | Jumps to vault root | Jumps to vault root |
 
 
 ## Settings
@@ -30,3 +54,5 @@ A fast file and folder picker for jumping to files and browsing folders.
 - **Show command title**: Toggle showing the "File palette" heading above the current folder path in the picker modal (defaults to enabled). When disabled, the folder path remains visible.
 - **Search properties**: Comma-separated frontmatter properties to search alongside file names (defaults to `title`). Offers autocomplete suggestions for properties found in your vault, indicating unsupported properties. Only string and string list values are searched.
 - **Show matching properties**: Toggle displaying configured frontmatter property values underneath each matching file name in the suggestion list (defaults to disabled). When enabled, matched text across all search terms is highlighted.
+- **Browse outside vault**: Allow the palette to open in and navigate to folders outside the vault. When off, the palette stays inside the vault as before (defaults to enabled).
+- **Allow creating files outside vault**: Let Shift+Enter create files while browsing outside the vault on desktop (defaults to disabled).

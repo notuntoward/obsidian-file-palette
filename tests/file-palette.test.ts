@@ -1,23 +1,30 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FilePalettePlugin, {
 	alignFuzzyRanges,
 	classifyLiteral,
 	compareWordMatches,
+	getParentPath,
+	makeLocation,
 	MatchQuality,
+	norm,
 	tokenize,
+	vaultBase,
 } from '../src/main';
 import * as ObsidianMock from './__mocks__/obsidian';
 import {
 	AbstractInputSuggest,
+	FileSystemAdapter,
 	Notice,
 	Platform,
 	Setting,
 	SuggestModal,
 	TAbstractFile,
+	TExternalFile,
 	TFile,
 	TFolder,
 } from './__mocks__/obsidian';
@@ -246,6 +253,8 @@ describe('file palette picker', () => {
 			showCommandTitle: false,
 			searchProperties: ['title'],
 			showPropertyMatches: false,
+			browseOutsideVault: true,
+			allowCreateOutsideVault: false,
 		});
 
 		const reloadedPlugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
@@ -1304,3 +1313,350 @@ describe('alignFuzzyRanges', () => {
 		expect(alignFuzzyRanges('Policy Feasibility', [[0, 3], [8, 9]], 'polarization')).toEqual([[0, 3], [8, 9]]);
 	});
 });
+
+describe('makeLocation and getParentPath', () => {
+	const createMockApp = (vaultBasePath: string | null): App => {
+		const adapter = vaultBasePath ? new FileSystemAdapter(vaultBasePath) : undefined;
+		return {
+			vault: {
+				adapter,
+				getRoot: () => new TFolder('', ''),
+			},
+		} as unknown as App;
+	};
+
+	it('handles Windows case-insensitive match', () => {
+		Platform.isWin = true;
+		const app = createMockApp('C:/Vault');
+		const loc = makeLocation(app, 'c:/vault/docs/note.md');
+		expect(loc.inVault).toBe(true);
+		expect(loc.vaultRelPath).toBe('/docs/note.md');
+		expect(loc.absPath).toBe('c:/vault/docs/note.md');
+	});
+
+	it('handles case-sensitive match on non-Windows', () => {
+		Platform.isWin = false;
+		const app = createMockApp('C:/Vault');
+		const locMismatch = makeLocation(app, 'c:/vault/docs/note.md');
+		expect(locMismatch.inVault).toBe(false);
+		expect(locMismatch.vaultRelPath).toBeNull();
+
+		const locMatch = makeLocation(app, 'C:/Vault/docs/note.md');
+		expect(locMatch.inVault).toBe(true);
+		expect(locMatch.vaultRelPath).toBe('/docs/note.md');
+		Platform.isWin = true;
+	});
+
+	it('identifies sibling folders with a shared prefix as outside the vault', () => {
+		Platform.isWin = true;
+		const app = createMockApp('C:/Vault');
+		const locSibling = makeLocation(app, 'C:/Vault2/notes');
+		expect(locSibling.inVault).toBe(false);
+		expect(locSibling.vaultRelPath).toBeNull();
+
+		const locExactSibling = makeLocation(app, 'C:/Vault2');
+		expect(locExactSibling.inVault).toBe(false);
+		expect(locExactSibling.vaultRelPath).toBeNull();
+	});
+
+	it('handles trailing slashes on vault root and subfolders', () => {
+		Platform.isWin = true;
+		const app = createMockApp('C:/Vault');
+		const locRootSlash = makeLocation(app, 'C:/Vault/');
+		expect(locRootSlash.inVault).toBe(true);
+		expect(locRootSlash.vaultRelPath).toBe('/');
+		expect(locRootSlash.absPath).toBe('C:/Vault');
+
+		const locSubSlash = makeLocation(app, 'C:/Vault/subfolder/');
+		expect(locSubSlash.inVault).toBe(true);
+		expect(locSubSlash.vaultRelPath).toBe('/subfolder');
+		expect(locSubSlash.absPath).toBe('C:/Vault/subfolder');
+	});
+
+	it('handles the vault root itself', () => {
+		Platform.isWin = true;
+		const app = createMockApp('C:/Vault');
+		const locRoot = makeLocation(app, 'C:/Vault');
+		expect(locRoot.inVault).toBe(true);
+		expect(locRoot.vaultRelPath).toBe('/');
+		expect(locRoot.absPath).toBe('C:/Vault');
+	});
+
+	it('falls back to in-vault when vaultBase is null', () => {
+		const app = createMockApp(null);
+		const loc = makeLocation(app, '/Finance');
+		expect(loc.inVault).toBe(true);
+		expect(loc.vaultRelPath).toBe('/Finance');
+	});
+
+	it('stops at drive root on Windows and does not navigate up', () => {
+		expect(getParentPath('C:')).toBe('C:');
+		expect(getParentPath('C:/')).toBe('C:');
+		expect(getParentPath('D:')).toBe('D:');
+	});
+
+	it('navigates up subpaths correctly', () => {
+		expect(getParentPath('C:/Users/scott')).toBe('C:/Users');
+		expect(getParentPath('C:/Users')).toBe('C:');
+		expect(getParentPath('/home/user/docs')).toBe('/home/user');
+		expect(getParentPath('/home/user')).toBe('/home');
+		expect(getParentPath('/home')).toBe('/');
+		expect(getParentPath('/')).toBe('/');
+	});
+});
+
+describe('external file and folder palette behavior', () => {
+	let tempDir: string;
+	let app: App;
+	let plugin: FilePalettePlugin & {
+		commands: { id: string; callback: () => void }[];
+		settingTabs: {
+			getSettingDefinitions: () => { name?: string; control?: { key: string } }[];
+			getControlValue: (key: string) => unknown;
+			setControlValue: (key: string, value: unknown) => Promise<void>;
+		}[];
+	};
+	let root: TFolder;
+	let shownPaths: string[];
+	let openedDefaultAppPaths: string[];
+	let openedFiles: unknown[];
+
+	beforeEach(async () => {
+		vi.restoreAllMocks();
+		SuggestModal.instances.length = 0;
+		Notice.messages.length = 0;
+		shownPaths = [];
+		openedDefaultAppPaths = [];
+		openedFiles = [];
+		Platform.isDesktopApp = true;
+		Platform.isWin = true;
+		Platform.isMobile = false;
+
+		tempDir = mkdtempSync(join(tmpdir(), 'palette-ext-'));
+		writeFileSync(join(tempDir, 'outside-doc.md'), '# External Note\n');
+		writeFileSync(join(tempDir, 'readme.txt'), 'Hello outside world\n');
+
+		root = new TFolder('', '');
+		app = {
+			vault: {
+				adapter: new FileSystemAdapter('C:/ObsidianVault'),
+				getRoot: () => root,
+				getAbstractFileByPath: () => null,
+				getFileByPath: (path: string) => {
+					if (path.startsWith('file:')) {
+						const real = path.slice(5);
+						return new TExternalFile('outside-doc.md', path, real);
+					}
+					return null;
+				},
+				create: vi.fn(),
+			},
+			workspace: {
+				getActiveFile: () => new TExternalFile('outside-doc.md', 'outside-doc.md', join(tempDir, 'outside-doc.md')),
+				getLeaf: () => ({
+					openFile: vi.fn((file: unknown) => {
+						openedFiles.push(file);
+						return Promise.resolve();
+					}),
+				}),
+				getLeavesOfType: () => [],
+			},
+			showInFolder: (path: string) => {
+				shownPaths.push(path);
+			},
+			openWithDefaultApp: (path: string) => {
+				openedDefaultAppPaths.push(path);
+			},
+			metadataCache: {
+				getFileCache: () => null,
+			},
+			fileManager: {
+				generateMarkdownLink: vi.fn(),
+			},
+		} as unknown as App;
+
+		plugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
+		await plugin.onload();
+	});
+
+	afterEach(() => {
+		try {
+			rmSync(tempDir, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it('opens in the external folder with .palette-external class and hard-drive indicator', async () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		expect(modal.modalEl.classList.contains('palette-external')).toBe(true);
+		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
+		expect(indicator?.getAttribute('data-icon')).toBe('hard-drive');
+
+		const pathEl = modal.modalEl.querySelector('.fp-path');
+		const expectedDisplay = tempDir.replace(/\//g, '\\');
+		expect(pathEl?.getAttribute('title')).toBe(expectedDisplay);
+	});
+
+	it('lists external files from disk', async () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		const names = suggestions.map((s) => s.name);
+		expect(names).toContain('outside-doc.md');
+		expect(names).toContain('readme.txt');
+	});
+
+	it('dims disabled actions in footer hints for external folders', () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const disabledHints = Array.from(modal.modalEl.querySelectorAll('.fp-hint.is-disabled'));
+		const commands = disabledHints.map((el) => el.querySelector('.fp-hint-command')?.textContent);
+		expect(commands).toContain(':');
+		expect(commands.some((c) => c?.includes('↵'))).toBe(true);
+	});
+
+	it('shows a notice that sidebar only shows vault files when colon operator is pressed', async () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		const entry = suggestions.find((s) => s.name === 'outside-doc.md');
+		if (!entry) throw new Error('Expected outside-doc.md');
+
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true }));
+		expect(Notice.messages).toContain('The sidebar only shows vault files.');
+	});
+
+	it('refuses to create files outside vault by default and shows notice', async () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'new-outside-file';
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+
+		expect(Notice.messages).toContain('Creating files outside the vault is turned off.');
+	});
+
+	it('allows creating files outside vault when allowCreateOutsideVault setting is enabled', async () => {
+		plugin.settings.allowCreateOutsideVault = true;
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		modal.inputEl.value = 'new-created-outside';
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+
+		await vi.waitFor(() => {
+			const createdPath = join(tempDir, 'new-created-outside.md');
+			expect(readFileSync(createdPath, 'utf8')).toBe('');
+		});
+		expect(openedFiles.length).toBe(1);
+	});
+
+	it('copies a file:/// URI link with Ctrl+Shift+L when outside the vault', async () => {
+		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
+
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		const entry = suggestions.find((s) => s.name === 'outside-doc.md');
+		if (!entry) throw new Error('Expected outside-doc.md');
+
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		const event = new KeyboardEvent('keydown', {
+			key: 'L',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+		modal.inputEl.dispatchEvent(event);
+
+		const normalizedTarget = norm(join(tempDir, 'outside-doc.md')).replace(/^\/+/, '');
+		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(`file:///${normalizedTarget}`));
+		expect(Notice.messages).toContain('Link copied to clipboard.');
+	});
+
+	it('returns to vault root and removes .palette-external when query starts with tilde', async () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		expect(modal.modalEl.classList.contains('palette-external')).toBe(true);
+
+		modal.inputEl.value = '~';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(modal.modalEl.classList.contains('palette-external')).toBe(false);
+		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
+		expect(indicator?.classList.contains('fp-path-hidden')).toBe(true);
+	});
+
+	it('stays in vault when browseOutsideVault is disabled', async () => {
+		plugin.settings.browseOutsideVault = false;
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		expect(modal.modalEl.classList.contains('palette-external')).toBe(false);
+		const pathEl = modal.modalEl.querySelector('.fp-path');
+		expect(pathEl?.textContent).toBe('/');
+	});
+
+	it('handles ? and * operators on external files', async () => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		const entry = suggestions.find((s) => s.name === 'outside-doc.md');
+		if (!entry) throw new Error('Expected outside-doc.md');
+
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));
+		const expectedOsPath = norm(join(tempDir, 'outside-doc.md')).replace(/\//g, '\\');
+		expect(shownPaths).toEqual([expectedOsPath]);
+
+		// Reopen and test *
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal2 = SuggestModal.instances.at(-1);
+		if (!modal2) throw new Error('Expected modal2 to open');
+
+		const element2 = document.createElement('div');
+		element2.addClass('suggestion-item');
+		element2.addClass('is-selected');
+		modal2.renderSuggestion(entry, element2);
+		modal2.resultContainerEl.appendChild(element2);
+
+		modal2.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
+		expect(openedDefaultAppPaths).toEqual([expectedOsPath]);
+	});
+});
+
