@@ -366,6 +366,29 @@ type AppWithExternalActions = App & {
 };
 
 export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
+	private static activeModal: VaultPathSuggestModal | null = null;
+	private static pendingNavigationTimeout: number | ReturnType<typeof setTimeout> | null = null;
+
+	public static getActiveModal(): VaultPathSuggestModal | null {
+		return VaultPathSuggestModal.activeModal;
+	}
+
+	public static closeActiveModal(except?: VaultPathSuggestModal): void {
+		if (VaultPathSuggestModal.pendingNavigationTimeout !== null) {
+			window.clearTimeout(VaultPathSuggestModal.pendingNavigationTimeout as number);
+			VaultPathSuggestModal.pendingNavigationTimeout = null;
+		}
+		if (VaultPathSuggestModal.activeModal && VaultPathSuggestModal.activeModal !== except) {
+			const modalToClose = VaultPathSuggestModal.activeModal;
+			VaultPathSuggestModal.activeModal = null;
+			try {
+				modalToClose.close();
+			} catch {
+				// Ignore errors if the modal or its window was already destroyed
+			}
+		}
+	}
+
 	private readonly parentEntry: VaultEntry = { file: null, isParent: true };
 	private readonly entryBySuggestion = new WeakMap<HTMLElement, VaultEntry>();
 	private pathEl: HTMLDivElement | null = null;
@@ -539,6 +562,19 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 	}
 
+	open(): void {
+		VaultPathSuggestModal.closeActiveModal(this);
+		VaultPathSuggestModal.activeModal = this;
+		super.open();
+	}
+
+	close(): void {
+		if (VaultPathSuggestModal.activeModal === this) {
+			VaultPathSuggestModal.activeModal = null;
+		}
+		super.close();
+	}
+
 	onOpen(): void {
 		super.onOpen();
 		this.modalEl.addClass('file-palette-modal');
@@ -566,6 +602,9 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	onClose(): void {
+		if (VaultPathSuggestModal.activeModal === this) {
+			VaultPathSuggestModal.activeModal = null;
+		}
 		this.inputEl.removeEventListener('keydown', this.onInputKeydown);
 		this.inputEl.removeEventListener('input', this.onInput);
 		this.pathResizeObserver?.disconnect();
@@ -1064,7 +1103,12 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 	private navigateToLocation(location: PaletteLocation): void {
 		this.close();
-		window.setTimeout(() => {
+		if (VaultPathSuggestModal.pendingNavigationTimeout !== null) {
+			window.clearTimeout(VaultPathSuggestModal.pendingNavigationTimeout as number);
+			VaultPathSuggestModal.pendingNavigationTimeout = null;
+		}
+		VaultPathSuggestModal.pendingNavigationTimeout = window.setTimeout(() => {
+			VaultPathSuggestModal.pendingNavigationTimeout = null;
 			new VaultPathSuggestModal(
 				this.app,
 				location,
@@ -1459,17 +1503,39 @@ export default class FilePalettePlugin extends Plugin {
 			// eslint-disable-next-line obsidianmd/commands/no-plugin-name-in-command-name -- Keep the explicit label requested for discoverability.
 			name: 'Open file palette',
 			callback: () => {
-				new VaultPathSuggestModal(
-					this.app,
-					this.getActiveLocation(),
-					this.settings.showCommandTitle,
-					this.settings.searchProperties,
-					this.settings.showPropertyMatches,
-					this.settings.browseOutsideVault,
-					this.settings.allowCreateOutsideVault,
-				).open();
+				this.openPalette();
 			},
 		});
+		if (typeof this.app.workspace?.on === 'function') {
+			this.registerEvent(
+				this.app.workspace.on('window-close', (win, window) => {
+					const active = VaultPathSuggestModal.getActiveModal();
+					if (active) {
+						const doc = active.modalEl?.ownerDocument;
+						if (doc && (doc === win?.doc || doc === window?.document || doc.defaultView === window || doc.defaultView === win?.win)) {
+							VaultPathSuggestModal.closeActiveModal();
+						}
+					}
+				})
+			);
+		}
+	}
+
+	onunload(): void {
+		VaultPathSuggestModal.closeActiveModal();
+	}
+
+	openPalette(): void {
+		VaultPathSuggestModal.closeActiveModal();
+		new VaultPathSuggestModal(
+			this.app,
+			this.getActiveLocation(),
+			this.settings.showCommandTitle,
+			this.settings.searchProperties,
+			this.settings.showPropertyMatches,
+			this.settings.browseOutsideVault,
+			this.settings.allowCreateOutsideVault,
+		).open();
 	}
 
 	async saveSettings(): Promise<void> {

@@ -15,6 +15,7 @@ import FilePalettePlugin, {
 	splitLocationPath,
 	tokenize,
 	vaultBase,
+	VaultPathSuggestModal,
 } from '../src/main';
 import * as ObsidianMock from './__mocks__/obsidian';
 import {
@@ -56,6 +57,8 @@ describe('file palette picker', () => {
 		getActiveFile: () => { parent: TFolder; path: string };
 		getLeaf: (newLeaf?: 'tab' | 'split' | 'window' | boolean) => { openFile: ReturnType<typeof vi.fn> };
 		getLeavesOfType: () => { view: { revealInFolder: ReturnType<typeof vi.fn> } }[];
+		on?: ReturnType<typeof vi.fn>;
+		trigger?: (event: string, ...args: unknown[]) => void;
 	};
 	let openedFiles: TFile[];
 	let revealedItems: TAbstractFile[];
@@ -75,6 +78,7 @@ describe('file palette picker', () => {
 	beforeEach(async () => {
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
+		VaultPathSuggestModal.closeActiveModal();
 		SuggestModal.instances.length = 0;
 		AbstractInputSuggest.instances.length = 0;
 		Setting.instances.length = 0;
@@ -101,10 +105,22 @@ describe('file palette picker', () => {
 		});
 		generateMarkdownLink = vi.fn((file: TFile, _sourcePath: string) => `[[${file.basename}]]`);
 		metadataByFile = new Map();
+		const eventListeners = new Map<string, ((...args: unknown[]) => unknown)[]>();
 		workspace = {
 			getActiveFile: () => ({ parent: currentFolder, path: 'current/source.md' }),
 			getLeaf,
 			getLeavesOfType: () => [{ view: { revealInFolder } }],
+			on: vi.fn((event: string, callback: (...args: unknown[]) => unknown) => {
+				const listeners = eventListeners.get(event) ?? [];
+				listeners.push(callback);
+				eventListeners.set(event, listeners);
+				return { id: event };
+			}),
+			trigger: (event: string, ...args: unknown[]) => {
+				for (const listener of eventListeners.get(event) ?? []) {
+					listener(...args);
+				}
+			},
 		};
 		function getAbstractFileByPath(targetPath: string): TAbstractFile | null {
 			const normalized = targetPath
@@ -164,6 +180,7 @@ describe('file palette picker', () => {
 	});
 
 	afterEach(() => {
+		VaultPathSuggestModal.closeActiveModal();
 		vi.unstubAllGlobals();
 	});
 
@@ -1298,6 +1315,57 @@ describe('file palette picker', () => {
 			expect(Array.from(element.querySelectorAll('.suggestion-highlight'), (el) => el.textContent)).toEqual(['Pinson']);
 		});
 	});
+
+	it('ensures only one file palette is open across windows, closing the old one when a new one is opened', () => {
+		// Open palette in Window 1
+		runCommand('open-palette');
+		const modal1 = VaultPathSuggestModal.getActiveModal();
+		expect(modal1).not.toBeNull();
+		expect(modal1?.modalEl.querySelector('.fp-header')).not.toBeNull();
+
+		// Simulate user moving to Window 2 and opening the file palette
+		runCommand('open-palette');
+		const modal2 = VaultPathSuggestModal.getActiveModal();
+		expect(modal2).not.toBeNull();
+		expect(modal2).not.toBe(modal1);
+
+		// Old modal in Window 1 is closed
+		expect(modal1?.modalEl.querySelector('.fp-header')).toBeNull();
+		// New modal in Window 2 is open
+		expect(modal2?.modalEl.querySelector('.fp-header')).not.toBeNull();
+		expect(VaultPathSuggestModal.getActiveModal()).toBe(modal2);
+	});
+
+	it('cleans up active modal reference when the modal is closed', () => {
+		runCommand('open-palette');
+		const modal = VaultPathSuggestModal.getActiveModal();
+		expect(modal).not.toBeNull();
+
+		modal?.close();
+		expect(VaultPathSuggestModal.getActiveModal()).toBeNull();
+	});
+
+	it('closes the active modal when plugin is unloaded', () => {
+		runCommand('open-palette');
+		const modal = VaultPathSuggestModal.getActiveModal();
+		expect(modal).not.toBeNull();
+
+		plugin.onunload();
+		expect(modal?.modalEl.querySelector('.fp-header')).toBeNull();
+		expect(VaultPathSuggestModal.getActiveModal()).toBeNull();
+	});
+
+	it('cleans up active modal if the window containing it is closed', () => {
+		runCommand('open-palette');
+		const modal = VaultPathSuggestModal.getActiveModal();
+		expect(modal).not.toBeNull();
+
+		const popoutWindow = { document: modal?.modalEl.ownerDocument } as Window;
+		const workspaceWindow = { win: popoutWindow, doc: modal?.modalEl.ownerDocument } as never;
+
+		workspace.trigger?.('window-close', workspaceWindow, popoutWindow);
+		expect(VaultPathSuggestModal.getActiveModal()).toBeNull();
+	});
 });
 
 describe('alignFuzzyRanges', () => {
@@ -1481,6 +1549,7 @@ describe('external file and folder palette behavior', () => {
 	});
 
 	afterEach(() => {
+		VaultPathSuggestModal.closeActiveModal();
 		try {
 			rmSync(tempDir, { recursive: true, force: true });
 		} catch {}
