@@ -24,6 +24,26 @@
 	background: var(--background-secondary);
 	font-size: var(--font-ui-small);
 	white-space: nowrap;
+	transition: background-color 120ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.fp-path {
+		transition: none;
+	}
+}
+
+.fp-path.file-palette-outside {
+	background-color: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-secondary));
+}
+
+.fp-path.file-palette-outside .fp-path-icon {
+	color: var(--interactive-accent);
+}
+
+.fp-path.file-palette-outside .fp-path-icon:hover {
+	color: var(--interactive-accent-hover, var(--text-accent-hover, var(--interactive-accent)));
+	background-color: var(--background-modifier-hover);
 }
 
 .fp-path-icon {
@@ -205,22 +225,6 @@
 	text-decoration: none;
 }
 
-.file-palette-modal.palette-external .prompt-input {
-	border-left: 3px solid var(--text-faint);
-}
-
-.file-palette-modal.palette-external .fp-path,
-.file-palette-modal.palette-external .palette-path {
-	border-left: 2px solid var(--text-faint);
-	color: var(--text-muted);
-}
-
-.fp-external-indicator {
-	display: inline-flex;
-	align-items: center;
-	margin-inline-end: var(--size-4-1);
-	color: var(--text-muted);
-}
 
 .fp-hint.is-disabled {
 	opacity: 0.35;

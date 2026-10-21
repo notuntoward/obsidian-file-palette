@@ -9,9 +9,11 @@ import FilePalettePlugin, {
 	classifyLiteral,
 	compareWordMatches,
 	getParentPath,
+	getSystemRootLocation,
 	makeLocation,
 	MatchQuality,
 	norm,
+	resolveHome,
 	splitLocationPath,
 	tokenize,
 	vaultBase,
@@ -224,7 +226,8 @@ describe('file palette picker', () => {
 			hint.querySelector('.fp-hint-purpose')?.textContent,
 		])).toEqual([
 			['Tab', 'Complete'],
-			['~', 'Root'],
+			['~', 'Home'],
+			['^', 'Vault'],
 			[':', 'Reveal'],
 			['?', 'Explorer'],
 			['*', 'App'],
@@ -502,16 +505,17 @@ describe('file palette picker', () => {
 		expect(highlights).toEqual(['steady', 'fake']);
 	});
 
-	it('uses the vault root for tilde queries and updates the displayed path', () => {
+	it('uses the vault root for caret queries and updates the displayed path', () => {
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
 		if (!modal) throw new Error('Expected the picker modal to open');
 
-		modal.inputEl.value = '~';
+		modal.inputEl.value = '^';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
 		expect(modal.modalEl.querySelector('.file-palette-current-path')?.textContent).toBe('/');
-		expect(modal.getSuggestions('~').some((entry) => entry.file === rootFile)).toBe(true);
+		expect(modal.inputEl.value).toBe('');
+		expect((modal.getSuggestions('^') as any).some((entry: any) => entry.file === rootFile)).toBe(true);
 	});
 
 	it('keeps path segments in order and truncates ancestors before the current folder', () => {
@@ -637,7 +641,7 @@ describe('file palette picker', () => {
 		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
 		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
 		generateMarkdownLink.mockReturnValue('[Root note](Root%20note.md)');
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 		const event = new KeyboardEvent('keydown', {
 			key: 'L',
 			ctrlKey: true,
@@ -656,7 +660,7 @@ describe('file palette picker', () => {
 	});
 
 	it('does not consume L while the user is typing a search', () => {
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 		const event = new KeyboardEvent('keydown', { key: 'l', bubbles: true, cancelable: true });
 
 		modal.inputEl.dispatchEvent(event);
@@ -669,7 +673,7 @@ describe('file palette picker', () => {
 		vi.stubGlobal('navigator', {
 			clipboard: { writeText: vi.fn().mockRejectedValue(new Error('Permission denied')) },
 		});
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', {
 			key: 'l',
 			metaKey: true,
@@ -705,7 +709,7 @@ describe('file palette picker', () => {
 		{ label: 'Ctrl+Alt+Shift+Enter', options: { ctrlKey: true, altKey: true, shiftKey: true }, destination: 'window' },
 		{ label: 'Meta+Alt+Shift+Enter', options: { metaKey: true, altKey: true, shiftKey: true }, destination: 'window' },
 	] as const)('opens the highlighted file in a $destination with $label', ({ options, destination }) => {
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 		const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options });
 
 		modal.inputEl.dispatchEvent(event);
@@ -844,7 +848,7 @@ describe('file palette picker', () => {
 		const modal = SuggestModal.instances.at(-1);
 		if (!modal) throw new Error('Expected modal to open');
 
-		modal.inputEl.value = '~/Root note';
+		modal.inputEl.value = '^/Root note';
 		const event = new KeyboardEvent('keydown', {
 			key: 'Enter',
 			shiftKey: true,
@@ -938,13 +942,13 @@ describe('file palette picker', () => {
 	});
 
 	it('completes the highlighted file suggestion basename on Tab and preserves path prefixes', () => {
-		const modal = highlightEntry(rootFile, '~/Root');
-		modal.inputEl.value = '~/Root';
+		const modal = highlightEntry(rootFile, '^/Root');
+		modal.inputEl.value = '^/Root';
 		const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
 		modal.inputEl.dispatchEvent(event);
 
 		expect(event.defaultPrevented).toBe(true);
-		expect(modal.inputEl.value).toBe('~/Root note');
+		expect(modal.inputEl.value).toBe('^/Root note');
 	});
 
 	it('completes the parent entry on Tab', () => {
@@ -969,7 +973,7 @@ describe('file palette picker', () => {
 
 	it('hides the new-window shortcut and reports it unavailable on mobile', () => {
 		Platform.isMobile = true;
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 
 		expect(modal.modalEl.querySelector('.fp-footer-openers')?.textContent).not.toContain('Window');
 		modal.inputEl.dispatchEvent(
@@ -989,7 +993,7 @@ describe('file palette picker', () => {
 
 
 	it('reveals the highlighted file in the Obsidian file navigator with the colon operator', () => {
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 		const event = new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true });
 
 		modal.inputEl.dispatchEvent(event);
@@ -1008,7 +1012,7 @@ describe('file palette picker', () => {
 	});
 
 	it('shows the highlighted item in System File Explorer with the question-mark operator', () => {
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 
 		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));
 
@@ -1025,7 +1029,7 @@ describe('file palette picker', () => {
 	});
 
 	it('opens the highlighted file with the system default app using the asterisk operator', () => {
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 
 		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
 
@@ -1042,7 +1046,7 @@ describe('file palette picker', () => {
 	});
 
 	it('reports when opening with the system default app is unavailable', () => {
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 		(app as App & { openWithDefaultApp?: (path: string) => void | Promise<void> }).openWithDefaultApp = undefined;
 
 		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
@@ -1052,7 +1056,7 @@ describe('file palette picker', () => {
 	});
 
 	it('reports when opening with the system default app fails', async () => {
-		const modal = highlightEntry(rootFile, '~/Root');
+		const modal = highlightEntry(rootFile, '^/Root');
 		(app as App & { openWithDefaultApp?: (path: string) => void | Promise<void> }).openWithDefaultApp = vi.fn(
 			() => Promise.reject(new Error('Permission denied')),
 		);
@@ -1673,9 +1677,12 @@ describe('external file and folder palette behavior', () => {
 
 		expect(modal.modalEl.classList.contains('palette-external')).toBe(true);
 		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
-		expect(indicator?.getAttribute('data-icon')).toBe('hard-drive');
+		const isUnderHome = norm(tempDir).toLowerCase().startsWith(norm(tmpdir()).toLowerCase() + '/');
+		expect(indicator?.getAttribute('data-icon')).toBe(isUnderHome ? 'home' : 'hard-drive');
+		expect(indicator?.classList.contains('is-external')).toBe(true);
 
 		const pathEl = modal.modalEl.querySelector('.fp-path');
+		expect(pathEl?.classList.contains('file-palette-outside')).toBe(true);
 		const expectedDisplay = tempDir.replace(/\\/g, '/');
 		expect(pathEl?.getAttribute('title')).toBe(expectedDisplay);
 	});
@@ -1776,22 +1783,23 @@ describe('external file and folder palette behavior', () => {
 		});
 		modal.inputEl.dispatchEvent(event);
 
-		const normalizedTarget = norm(join(tempDir, 'outside-doc.md')).replace(/^\/+/, '');
-		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(`file:///${normalizedTarget}`));
-		expect(Notice.messages).toContain('Link copied to clipboard.');
+		expect(Notice.messages).toContain('Wiki-links can only be created for vault files.');
+		expect(clipboardWrite).not.toHaveBeenCalled();
 	});
 
-	it('returns to vault root and removes .palette-external when query starts with tilde', async () => {
+	it('returns to vault root and removes .palette-external when query starts with caret', async () => {
 		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
 		const modal = SuggestModal.instances.at(-1);
 		if (!modal) throw new Error('Expected modal to open');
 
 		expect(modal.modalEl.classList.contains('palette-external')).toBe(true);
 
-		modal.inputEl.value = '~';
+		modal.inputEl.value = '^';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
 		expect(modal.modalEl.classList.contains('palette-external')).toBe(false);
+		const pathEl = modal.modalEl.querySelector('.fp-path');
+		expect(pathEl?.classList.contains('file-palette-outside')).toBe(false);
 		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
 		expect(indicator?.getAttribute('data-icon')).toBe('vault');
 	});
@@ -1887,9 +1895,10 @@ describe('external file and folder palette behavior', () => {
 		const pathEl = modal.modalEl.querySelector('.fp-path');
 		if (!pathEl) throw new Error('Expected path element');
 
-		// Check external icon is hard-drive
+		// Check external icon is home if under home, or hard-drive if not
 		const iconEl = pathEl.querySelector<HTMLElement>('.fp-path-icon');
-		expect(iconEl?.getAttribute('data-icon')).toBe('hard-drive');
+		const isUnderHome = norm(tempDir).toLowerCase().startsWith(norm(tmpdir()).toLowerCase() + '/');
+		expect(iconEl?.getAttribute('data-icon')).toBe(isUnderHome ? 'home' : 'hard-drive');
 
 		// Click parent segment (the second segment)
 		const segments = Array.from(pathEl.querySelectorAll<HTMLElement>('.fp-path-segment'));
@@ -1905,6 +1914,217 @@ describe('external file and folder palette behavior', () => {
 			const latestModal = SuggestModal.instances.at(-1);
 			expect(latestModal).not.toBeNull();
 		});
+	});
+});
+
+describe('home directory resolution, shortcuts, and Location model', () => {
+	let app: App;
+	let root: TFolder;
+
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+		Notice.messages.length = 0;
+		Platform.isDesktopApp = true;
+		Platform.isMobile = false;
+		Platform.isWin = true;
+
+		root = new TFolder('', '');
+		app = {
+			vault: {
+				adapter: new FileSystemAdapter('C:/TestVault'),
+				getRoot: () => root,
+				getAbstractFileByPath: () => null,
+				getFileByPath: () => null,
+				create: vi.fn(),
+			},
+			workspace: {
+				getActiveFile: () => null,
+				getLeaf: () => ({ openFile: vi.fn() }),
+				getLeavesOfType: () => [],
+			},
+			metadataCache: { getFileCache: () => null },
+			fileManager: { generateMarkdownLink: vi.fn() },
+		} as unknown as App;
+	});
+
+	it('resolveHome returns null when not on desktop', () => {
+		Platform.isDesktopApp = false;
+		expect(resolveHome()).toBeNull();
+	});
+
+	it('resolveHome uses os.homedir() and normalizes with forward slashes', () => {
+		const home = resolveHome();
+		expect(home).not.toBeNull();
+		expect(home).not.toContain('\\');
+		expect(home?.startsWith('/') || /^[a-zA-Z]:\//.test(home ?? '')).toBe(true);
+	});
+
+	it('resolveHome falls back to os.userInfo().homedir if os.homedir() returns empty or throws', () => {
+		const os = require('os');
+		const spyHomedir = vi.spyOn(os, 'homedir').mockImplementation(() => '');
+		const spyUserInfo = vi.spyOn(os, 'userInfo').mockReturnValue({ homedir: tmpdir() } as any);
+
+		const resolved = resolveHome();
+		expect(resolved).toBe(norm(tmpdir()));
+		expect(spyUserInfo).toHaveBeenCalled();
+
+		spyHomedir.mockRestore();
+		spyUserInfo.mockRestore();
+	});
+
+	it('resolveHome returns null if path is not absolute or does not exist', () => {
+		const os = require('os');
+		const spyHomedir = vi.spyOn(os, 'homedir').mockReturnValue('relative/path/to/home');
+
+		expect(resolveHome()).toBeNull();
+
+		spyHomedir.mockReturnValue('C:/NonExistentPathThatDoesNotExist_123456');
+		expect(resolveHome()).toBeNull();
+
+		spyHomedir.mockRestore();
+	});
+
+	it('caches resolveHome per palette open', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		const home1 = modal.resolveHome();
+		const home2 = modal.resolveHome();
+		expect(home1).toBe(home2);
+	});
+
+	it('~ alone in query navigates to user home directory and sets home icon', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		modal.open();
+
+		modal.inputEl.value = '~';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		const home = resolveHome();
+		expect(modal.currentLocation.absPath).toBe(home);
+		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
+		expect(indicator?.getAttribute('data-icon')).toBe('home');
+		expect(modal.inputEl.value).toBe('');
+	});
+
+	it('~/ navigates relative to home directory', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		modal.open();
+
+		modal.inputEl.value = '~/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		const home = resolveHome();
+		expect(modal.currentLocation.absPath).toBe(home);
+	});
+
+	it('~name without slash is treated as ordinary search text, not user home', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		modal.open();
+
+		modal.inputEl.value = '~otheruser';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		// Stays in vault
+		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+	});
+
+	it('^ alone in query navigates to vault top and sets vault icon', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path');
+		modal.open();
+
+		modal.inputEl.value = '^';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
+		expect(indicator?.getAttribute('data-icon')).toBe('vault');
+		expect(modal.inputEl.value).toBe('');
+	});
+
+	it('^/ navigates to vault root and continues path from vault top', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path');
+		modal.open();
+
+		modal.inputEl.value = '^/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+	});
+
+	it('^name without slash is treated as ordinary search text', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path');
+		modal.open();
+
+		modal.inputEl.value = '^searchterm';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(modal.currentLocation.absPath).toBe('C:/Some/Other/Path');
+	});
+
+	it('/ within vault goes to vault top, but outside goes to OS root', () => {
+		// Inside vault
+		const inVaultModal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		inVaultModal.open();
+		inVaultModal.inputEl.value = '/';
+		inVaultModal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(inVaultModal.currentLocation.absPath).toBe('C:/TestVault');
+
+		// Outside vault on Windows
+		const outsideModal = new VaultPathSuggestModal(app, 'C:/Users/scott/repos');
+		outsideModal.open();
+		outsideModal.inputEl.value = '/';
+		outsideModal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(outsideModal.currentLocation.absPath).toBe('C:/');
+	});
+
+	it('getSystemRootLocation resolves drive root or filesystem root correctly', () => {
+		expect(getSystemRootLocation(app, { absPath: 'C:/Users/scott' }).absPath).toBe('C:/');
+		expect(getSystemRootLocation(app, { absPath: 'D:/Projects/foo' }).absPath).toBe('D:/');
+		expect(getSystemRootLocation(app, { absPath: '/var/log/nginx' }).absPath).toBe('/');
+		expect(getSystemRootLocation(app, { absPath: '//server/share/docs' }).absPath).toBe('//server/share');
+	});
+
+	it('mobile hides ~ in footer and treats ~ as vault root', () => {
+		Platform.isMobile = true;
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		modal.open();
+
+		const footerText = modal.modalEl.querySelector('.fp-footer')?.textContent ?? '';
+		expect(footerText).not.toContain('~');
+		expect(footerText).toContain('^');
+
+		// Typing ~ on mobile treats it as ^ (vault root)
+		modal.inputEl.value = '~';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+	});
+
+	it('Location abstraction provides canCreate, canLink, canReveal, list, and parent', async () => {
+		const vaultLoc = makeLocation(app, 'C:/TestVault');
+		expect(vaultLoc.canCreate).toBe(true);
+		expect(vaultLoc.canLink).toBe(true);
+		expect(vaultLoc.canReveal).toBe(true);
+		expect(vaultLoc.inVault).toBe(true);
+
+		const extLoc = makeLocation(app, 'C:/External');
+		expect(extLoc.canCreate).toBe(false);
+		expect(extLoc.canLink).toBe(false);
+		expect(extLoc.canReveal).toBe(false);
+		expect(extLoc.inVault).toBe(false);
+
+		const extLocAllowed = makeLocation(app, 'C:/External', { allowCreateOutsideVault: true });
+		expect(extLocAllowed.canCreate).toBe(true);
+
+		const parentLoc = extLoc.parent();
+		expect(parentLoc?.absPath).toBe('C:/');
+		expect(parentLoc?.parent()).toBeNull();
+	});
+
+	it('stops at drive root on Windows and does not navigate past it', () => {
+		expect(getParentPath('C:/')).toBe('C:');
+		expect(getParentPath('C:')).toBe('C:');
+		const driveRootLoc = makeLocation(app, 'C:/');
+		expect(driveRootLoc.parent()).toBeNull();
 	});
 });
 

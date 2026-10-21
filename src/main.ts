@@ -37,15 +37,36 @@ const DEFAULT_SETTINGS: FilePaletteSettings = {
 	allowCreateOutsideVault: false,
 };
 
+export interface PaletteItem {
+	name: string;
+	isFolder: boolean;
+	basename: string;
+	extension: string;
+	absPath: string;
+	file: TAbstractFile | null;
+}
+
+export interface LocationOptions {
+	browseOutsideVault?: boolean;
+	allowCreateOutsideVault?: boolean;
+}
+
 export interface PaletteLocation {
 	absPath: string; // always the OS path, normalized (forward slashes)
 	inVault: boolean; // derived, never stored independently
 	vaultRelPath: string | null; // "/Finance" when inVault, else null
+	canCreate: boolean;
+	canLink: boolean;
+	canReveal: boolean;
+	list(): Promise<PaletteItem[]> | PaletteItem[];
+	parent(): PaletteLocation | null;
 }
 
 export const norm = (p: string): string => {
 	const s = p.replace(/\\/g, '/').replace(/\/+$/, '');
-	return s === '' && p.startsWith('/') ? '/' : s;
+	if (s === '' && p.startsWith('/')) return '/';
+	if (/^[a-zA-Z]:$/.test(s)) return `${s}/`;
+	return s;
 };
 
 const pathCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
@@ -55,31 +76,92 @@ export function vaultBase(app: App): string | null {
 	return a instanceof FileSystemAdapter ? norm(a.getBasePath()) : null;
 }
 
-export function makeLocation(app: App, absPath: string): PaletteLocation {
-	const abs = norm(absPath);
-	const base = vaultBase(app);
-	if (!base) {
-		const vPath = abs.startsWith('/') ? abs : `/${abs}`;
-		return {
-			absPath: abs,
-			inVault: true,
-			vaultRelPath: vPath === '' ? '/' : vPath,
-		};
+function getOs(): typeof import('os') | null {
+	if (!Platform.isDesktopApp) return null;
+	try {
+		return require('os');
+	} catch {
+		return null;
 	}
-	const ci = Platform.isWin ? (s: string) => s.toLowerCase() : (s: string) => s;
-	const inVault = ci(abs) === ci(base) || ci(abs).startsWith(ci(base) + '/');
-	return {
-		absPath: abs,
-		inVault,
-		vaultRelPath: inVault ? abs.slice(base.length) || '/' : null,
-	};
 }
 
+function getFs(): typeof import('fs') | null {
+	if (!Platform.isDesktopApp) return null;
+	try {
+		return require('fs');
+	} catch {
+		return null;
+	}
+}
+
+function getPath(): typeof import('path') | null {
+	if (!Platform.isDesktopApp) return null;
+	try {
+		return require('path');
+	} catch {
+		return null;
+	}
+}
+
+export function resolveHome(): string | null {
+	if (Platform.isMobile || !Platform.isDesktopApp) return null;
+	const osModule = getOs();
+	if (!osModule) return null;
+
+	let rawHome: string | null = null;
+	try {
+		rawHome = osModule.homedir();
+	} catch {
+		rawHome = null;
+	}
+
+	if (!rawHome || rawHome.trim() === '') {
+		try {
+			rawHome = osModule.userInfo().homedir;
+		} catch {
+			rawHome = null;
+		}
+	}
+
+	if (!rawHome || rawHome.trim() === '') {
+		return null;
+	}
+
+	const pathModule = getPath();
+	const isAbsolute = pathModule
+		? pathModule.isAbsolute(rawHome)
+		: (/^([a-zA-Z]:[/\\]|\/|\\\\)/.test(rawHome));
+
+	if (!isAbsolute) {
+		return null;
+	}
+
+	const fsModule = getFs();
+	if (!fsModule) return null;
+
+	try {
+		const stat = fsModule.statSync(rawHome);
+		if (!stat.isDirectory()) {
+			return null;
+		}
+	} catch {
+		return null;
+	}
+
+	return norm(rawHome);
+}
 
 export function getParentPath(abs: string): string {
 	const normalized = norm(abs);
-	if (/^[a-zA-Z]:$/.test(normalized)) {
-		return normalized;
+	// On Windows, enumerating all available drive letters (A:-Z:) reliably and synchronously
+	// across mapped network drives, optical drives, and unmounted volumes requires native Win32 APIs
+	// or spawning external shell commands (like wmic/powershell/fsutil), which is slow, unreliable,
+	// and unavailable in pure Node/Obsidian sandbox. Therefore, we safely stop at the drive root (e.g. C:/).
+	if (/^[a-zA-Z]:\/?$/.test(normalized)) {
+		return normalized.replace(/\/$/, '');
+	}
+	if (/^\/\/[^/]+\/[^/]+\/?$/.test(normalized)) {
+		return normalized.replace(/\/$/, '');
 	}
 	if (normalized === '' || normalized === '/') {
 		return '/';
@@ -87,21 +169,160 @@ export function getParentPath(abs: string): string {
 	const lastSlash = normalized.lastIndexOf('/');
 	if (lastSlash < 0) return normalized;
 	if (lastSlash === 0) return '/';
+	if (lastSlash === 2 && /^[a-zA-Z]:/.test(normalized)) {
+		return normalized.slice(0, 2);
+	}
 	return normalized.slice(0, lastSlash);
 }
 
-export function locationFromFolder(app: App, folder: TFolder): PaletteLocation {
+function getFolderFromLocation(app: App, loc: { inVault: boolean; vaultRelPath: string | null }): TFolder | null {
+	if (!loc.inVault || loc.vaultRelPath === null) return null;
+	if (loc.vaultRelPath === '/' || loc.vaultRelPath === '') {
+		return app.vault.getRoot();
+	}
+	const rel = loc.vaultRelPath.replace(/^\/+/, '');
+	const file = app.vault.getAbstractFileByPath(rel);
+	return file instanceof TFolder ? file : null;
+}
+
+function makeItemAbsPath(loc: { absPath: string }, name: string): string {
+	if (loc.absPath === '/') return `/${name}`;
+	if (loc.absPath.endsWith('/')) return `${loc.absPath}${name}`;
+	return norm(`${loc.absPath}/${name}`);
+}
+
+export class PaletteLocationImpl implements PaletteLocation {
+	public readonly absPath: string;
+	public readonly inVault: boolean;
+	public readonly vaultRelPath: string | null;
+	public readonly canCreate: boolean;
+	public readonly canLink: boolean;
+	public readonly canReveal: boolean;
+
+	constructor(
+		private readonly app: App,
+		absPath: string,
+		private readonly options: LocationOptions = {},
+	) {
+		const abs = norm(absPath);
+		this.absPath = abs;
+		const base = vaultBase(app);
+		if (!base) {
+			const vPath = abs.startsWith('/') ? abs : `/${abs}`;
+			this.inVault = true;
+			this.vaultRelPath = vPath === '' ? '/' : vPath;
+		} else {
+			const ci = Platform.isWin ? (s: string) => s.toLowerCase() : (s: string) => s;
+			const inVault = ci(abs) === ci(base) || ci(abs).startsWith(ci(base) + '/');
+			this.inVault = inVault;
+			this.vaultRelPath = inVault ? abs.slice(base.length) || '/' : null;
+		}
+
+		const allowCreateOutside = options.allowCreateOutsideVault ?? DEFAULT_SETTINGS.allowCreateOutsideVault;
+		this.canCreate = this.inVault || allowCreateOutside;
+		this.canLink = this.inVault;
+		this.canReveal = this.inVault;
+	}
+
+	listSync(): PaletteItem[] {
+		if (!this.inVault) return [];
+		const targetFolder = getFolderFromLocation(this.app, this);
+		if (!targetFolder) return [];
+		return targetFolder.children.map((file) => ({
+			name: file.name,
+			isFolder: file instanceof TFolder,
+			basename: file instanceof TFile ? file.basename : file.name,
+			extension: file instanceof TFile ? file.extension : '',
+			absPath: makeItemAbsPath(this, file.name),
+			file,
+		}));
+	}
+
+	async list(): Promise<PaletteItem[]> {
+		if (this.inVault) {
+			return this.listSync();
+		}
+
+		if (!Platform.isDesktopApp) return [];
+		const fsModule = getFs();
+		if (!fsModule) return [];
+
+		try {
+			const dirents = await fsModule.promises.readdir(this.absPath, { withFileTypes: true });
+			const items: PaletteItem[] = [];
+			for (const dirent of dirents) {
+				let isFolder = dirent.isDirectory();
+				let isFile = dirent.isFile();
+				if (typeof dirent.isSymbolicLink === 'function' && dirent.isSymbolicLink()) {
+					try {
+						const stat = fsModule.statSync(`${this.absPath}/${dirent.name}`);
+						isFolder = stat.isDirectory();
+						isFile = stat.isFile();
+					} catch {
+						continue;
+					}
+				}
+				if (!isFolder && !isFile) continue;
+				const name = dirent.name;
+				const extIndex = name.lastIndexOf('.');
+				const basename = extIndex > 0 ? name.slice(0, extIndex) : name;
+				const extension = extIndex > 0 ? name.slice(extIndex + 1) : '';
+				items.push({
+					name,
+					isFolder,
+					basename,
+					extension,
+					absPath: norm(`${this.absPath}/${name}`),
+					file: null,
+				});
+			}
+			return items;
+		} catch {
+			return [];
+		}
+	}
+
+	parent(): PaletteLocation | null {
+		const browseOutside = this.options.browseOutsideVault ?? DEFAULT_SETTINGS.browseOutsideVault;
+		if (this.inVault && !browseOutside) {
+			const folder = getFolderFromLocation(this.app, this);
+			if (folder?.parent) {
+				return locationFromFolder(this.app, folder.parent, this.options);
+			}
+			return null;
+		}
+		const parentPath = getParentPath(this.absPath);
+		if (norm(parentPath) === this.absPath) {
+			return null;
+		}
+		return new PaletteLocationImpl(this.app, parentPath, this.options);
+	}
+}
+
+export function makeLocation(app: App, absPath: string, options?: LocationOptions): PaletteLocation {
+	return new PaletteLocationImpl(app, absPath, options);
+}
+
+export function locationFromFolder(app: App, folder: TFolder, options?: LocationOptions): PaletteLocation {
 	const base = vaultBase(app);
 	if (base) {
 		const absPath = folder.path ? `${base}/${folder.path}` : base;
-		return makeLocation(app, absPath);
+		return makeLocation(app, absPath, options);
 	}
 	const vPath = folder.path ? (folder.path.startsWith('/') ? folder.path : `/${folder.path}`) : '/';
-	return {
-		absPath: norm(vPath),
-		inVault: true,
-		vaultRelPath: vPath,
-	};
+	return makeLocation(app, vPath, options);
+}
+
+export function getSystemRootLocation(app: App, loc: { absPath: string }, options?: LocationOptions): PaletteLocation {
+	const normalized = norm(loc.absPath);
+	if (/^[a-zA-Z]:/.test(normalized)) {
+		return makeLocation(app, `${normalized.slice(0, 2)}/`, options);
+	}
+	const uncMatch = normalized.match(/^(\/\/[^/]+\/[^/]+)/);
+	if (uncMatch) {
+		return makeLocation(app, uncMatch[1], options);
+	}
+	return makeLocation(app, '/', options);
 }
 
 export interface PathSegment {
@@ -110,7 +331,7 @@ export interface PathSegment {
 	isRoot: boolean;
 }
 
-export function splitLocationPath(loc: PaletteLocation): PathSegment[] {
+export function splitLocationPath(loc: { absPath: string; inVault: boolean; vaultRelPath?: string | null }): PathSegment[] {
 	if (loc.inVault) {
 		const rel = (loc.vaultRelPath ?? '/').replace(/\\/g, '/');
 		const rawSegments = rel.split('/').filter(Boolean);
@@ -164,15 +385,6 @@ export function splitLocationPath(loc: PaletteLocation): PathSegment[] {
 	return segments;
 }
 
-function getFs(): typeof import('fs') | null {
-	if (!Platform.isDesktopApp) return null;
-	try {
-		return require('fs');
-	} catch {
-		return null;
-	}
-}
-
 function normalizeSearchProperties(value: unknown): string[] {
 	if (!Array.isArray(value)) return [...DEFAULT_SETTINGS.searchProperties];
 	return [...new Set(value
@@ -203,7 +415,6 @@ export enum MatchQuality {
 }
 
 export function tokenize(text: string): string[] {
-	// Split on case/digit boundaries BEFORE lowercasing.
 	return text
 		.replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, '$1 $2')
 		.replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2')
@@ -222,26 +433,15 @@ export function classifyLiteral(
 	if (tokens.includes(word)) return MatchQuality.WholeWord;
 	if (tokens.some((t) => t.startsWith(word))) return MatchQuality.WordPrefix;
 	if (text.toLowerCase().includes(word)) return MatchQuality.Substring;
-	return null; // caller then tries prepareFuzzySearch
+	return null;
 }
 
 export interface WordMatch {
 	quality: MatchQuality;
 	isFilename: boolean;
-	fuzzyScore: number; // use 0 for literal matches with no fuzzy result
+	fuzzyScore: number;
 }
 
-/**
- * Ranking rules:
- * 1. Match quality comes first: WholeWord (4) > WordPrefix (3) > Substring (2) > Fuzzy (1).
- *    A whole-word property match beats a scattered fuzzy filename match.
- * 2. For equal match quality, filename matches rank before property matches.
- * 3. For equal quality and field location, the higher fuzzy score breaks the tie.
- * 4. Across multiple query words, files are compared element-by-element after sorting
- *    each file's per-word matches from weakest to strongest (weakest word decides first).
- * 5. Files with completely identical match quality across all query words are ordered
- *    alphabetically by path for stable results.
- */
 export function compareWordMatches(a: WordMatch, b: WordMatch): number {
 	return (
 		a.quality - b.quality ||
@@ -263,13 +463,6 @@ function findLiteralRanges(text: string, queryWord: string): [number, number][] 
 	return ranges;
 }
 
-/**
- * Obsidian's fuzzy matcher may take the first letters of a query word from an
- * earlier word ("su[p]er [olariz]ed") instead of the word start ("super [polariz]ed").
- * When a highlighted run starts mid-word and the unhighlighted letters before it
- * equal the query letters the matcher spent on earlier ranges, extend the run back
- * to the word start and take those letters away from the earlier ranges.
- */
 export function alignFuzzyRanges(
 	text: string,
 	ranges: [number, number][],
@@ -336,22 +529,6 @@ export interface VaultEntry {
 	absPath?: string;
 }
 
-interface PaletteItem {
-	name: string;
-	isFolder: boolean;
-	basename: string;
-	extension: string;
-	absPath: string;
-	file: TAbstractFile | null;
-}
-
-interface LocationCapabilities {
-	canCreate: boolean;
-	canRevealInSidebar: boolean;
-	canCopyLink: boolean;
-	canOpen: boolean;
-}
-
 interface PropertyMatch {
 	property: string;
 	value: string;
@@ -386,7 +563,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			try {
 				modalToClose.close();
 			} catch {
-				// Ignore errors if the modal or its window was already destroyed
+				// Ignore errors if the modal was already destroyed
 			}
 		}
 	}
@@ -394,6 +571,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private readonly parentEntry: VaultEntry = { file: null, isParent: true };
 	private readonly entryBySuggestion = new WeakMap<HTMLElement, VaultEntry>();
 	private readonly searchDataCache = new Map<string, { fields: SearchableField[]; displayProperties: RawProperty[] }>();
+	private cachedHomeDir: string | null | undefined = undefined;
 	limit = 100;
 	private pathEl: HTMLDivElement | null = null;
 	private indicatorEl: HTMLSpanElement | null = null;
@@ -402,11 +580,78 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private pathSegments: HTMLSpanElement[] = [];
 	private pathSegmentSeparators: (HTMLSpanElement | null)[] = [];
 	private pathResizeObserver: ResizeObserver | null = null;
+	private suggestionObserver: MutationObserver | null = null;
 	currentLocation: PaletteLocation;
 
+	resolveHome(): string | null {
+		if (this.cachedHomeDir === undefined) {
+			this.cachedHomeDir = resolveHome();
+		}
+		return this.cachedHomeDir;
+	}
+
+	private isClearingShortcut = false;
+
 	private readonly onInput = (): void => {
-		if (this.inputEl.value.startsWith('~')) {
+		if (this.isClearingShortcut) return;
+		const val = this.inputEl.value;
+		if (val === '^') {
 			this.currentLocation = this.getVaultRootLocation();
+			this.updateCurrentPathDisplay();
+			this.isClearingShortcut = true;
+			this.inputEl.value = '';
+			this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+			this.isClearingShortcut = false;
+			return;
+		}
+		if (val.startsWith('^/')) {
+			this.currentLocation = this.getVaultRootLocation();
+		} else if (val === '~') {
+			const home = this.resolveHome();
+			if (home) {
+				this.currentLocation = makeLocation(this.app, home, {
+					browseOutsideVault: this.browseOutsideVault,
+					allowCreateOutsideVault: this.allowCreateOutsideVault,
+				});
+				this.updateCurrentPathDisplay();
+				this.isClearingShortcut = true;
+				this.inputEl.value = '';
+				this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+				this.isClearingShortcut = false;
+				return;
+			} else if (Platform.isMobile) {
+				this.currentLocation = this.getVaultRootLocation();
+				this.updateCurrentPathDisplay();
+				this.isClearingShortcut = true;
+				this.inputEl.value = '';
+				this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+				this.isClearingShortcut = false;
+				return;
+			} else {
+				this.isClearingShortcut = true;
+				this.inputEl.value = '';
+				this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+				this.isClearingShortcut = false;
+				new Notice('User home directory could not be resolved.');
+				return;
+			}
+		} else if (val.startsWith('~/')) {
+			const home = this.resolveHome();
+			if (home) {
+				this.currentLocation = makeLocation(this.app, home, {
+					browseOutsideVault: this.browseOutsideVault,
+					allowCreateOutsideVault: this.allowCreateOutsideVault,
+				});
+			} else if (Platform.isMobile) {
+				this.currentLocation = this.getVaultRootLocation();
+			} else {
+				new Notice('User home directory could not be resolved.');
+			}
+		} else if (!this.currentLocation.inVault && (val === '/' || val.startsWith('/'))) {
+			this.currentLocation = getSystemRootLocation(this.app, this.currentLocation, {
+				browseOutsideVault: this.browseOutsideVault,
+				allowCreateOutsideVault: this.allowCreateOutsideVault,
+			});
 		}
 		this.updateCurrentPathDisplay();
 	};
@@ -475,8 +720,20 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		if (event.key === 'Backspace' && this.inputEl.value === '') {
-			const parent = this.getParentLocation();
+			const parent = this.currentLocation.parent();
 			if (parent) {
+				if (!parent.inVault && Platform.isDesktopApp) {
+					const fsModule = getFs();
+					if (fsModule) {
+						try {
+							fsModule.readdirSync(parent.absPath);
+						} catch (error) {
+							const reason = error instanceof Error ? error.message : String(error);
+							new Notice(`Cannot open folder: ${reason}`);
+							return;
+						}
+					}
+				}
 				event.preventDefault();
 				this.navigateToLocation(parent);
 			}
@@ -493,18 +750,24 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		private readonly allowCreateOutsideVault = DEFAULT_SETTINGS.allowCreateOutsideVault,
 	) {
 		super(app);
+		const locationOptions = {
+			browseOutsideVault: this.browseOutsideVault,
+			allowCreateOutsideVault: this.allowCreateOutsideVault,
+		};
 		if (typeof locationOrFolder === 'string') {
-			this.currentLocation = makeLocation(app, locationOrFolder);
-		} else if ('absPath' in locationOrFolder) {
+			this.currentLocation = makeLocation(app, locationOrFolder, locationOptions);
+		} else if ('absPath' in locationOrFolder && typeof locationOrFolder.list === 'function') {
 			this.currentLocation = locationOrFolder;
+		} else if ('absPath' in locationOrFolder) {
+			this.currentLocation = makeLocation(app, locationOrFolder.absPath, locationOptions);
 		} else {
-			this.currentLocation = locationFromFolder(app, locationOrFolder);
+			this.currentLocation = locationFromFolder(app, locationOrFolder, locationOptions);
 		}
 		this.setPlaceholder('Search this folder; select a folder to open it');
 	}
 
 	get currentFolder(): TFolder {
-		return this.getFolderFromLocation(this.currentLocation) ?? this.app.vault.getRoot();
+		return getFolderFromLocation(this.app, this.currentLocation) ?? this.app.vault.getRoot();
 	}
 
 	getSuggestions(query: string): VaultEntry[] | Promise<VaultEntry[]> {
@@ -512,12 +775,16 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (!target) return [];
 		const { location, name } = target;
 
-		if (location.inVault) {
-			const items = this.listVaultFolder(location);
+		if (location.inVault && location instanceof PaletteLocationImpl) {
+			const items = location.listSync();
 			return this.filterItems(items, name, location);
 		}
 
-		return this.listFolder(location).then((items) => this.filterItems(items, name, location));
+		const listRes = location.list();
+		if (Array.isArray(listRes)) {
+			return this.filterItems(listRes, name, location);
+		}
+		return listRes.then((items) => this.filterItems(items, name, location));
 	}
 
 	renderSuggestion(entry: VaultEntry, element: HTMLElement): void {
@@ -579,16 +846,45 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		if (entry.isParent) {
-			const parent = this.getParentLocation(targetLoc);
-			if (parent) this.navigateToLocation(parent);
+			const parent = targetLoc.parent();
+			if (parent) {
+				if (!parent.inVault && Platform.isDesktopApp) {
+					const fsModule = getFs();
+					if (fsModule) {
+						try {
+							fsModule.readdirSync(parent.absPath);
+						} catch (error) {
+							const reason = error instanceof Error ? error.message : String(error);
+							new Notice(`Cannot open folder: ${reason}`);
+							return;
+						}
+					}
+				}
+				this.navigateToLocation(parent);
+			}
 			return;
 		}
 
 		const isFolder = entry.isFolder ?? (entry.file instanceof TFolder);
 		if (isFolder) {
-			const nextAbs = entry.absPath ?? (entry.file ? this.makeItemAbsPath(targetLoc, entry.file.name) : '');
+			const nextAbs = entry.absPath ?? (entry.file ? makeItemAbsPath(targetLoc, entry.file.name) : '');
 			if (nextAbs) {
-				this.navigateToLocation(makeLocation(this.app, nextAbs));
+				if (!targetLoc.inVault && Platform.isDesktopApp) {
+					const fsModule = getFs();
+					if (fsModule) {
+						try {
+							fsModule.readdirSync(nextAbs);
+						} catch (error) {
+							const reason = error instanceof Error ? error.message : String(error);
+							new Notice(`Cannot open folder: ${reason}`);
+							return;
+						}
+					}
+				}
+				this.navigateToLocation(makeLocation(this.app, nextAbs, {
+					browseOutsideVault: this.browseOutsideVault,
+					allowCreateOutsideVault: this.allowCreateOutsideVault,
+				}));
 			}
 			return;
 		}
@@ -638,6 +934,16 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			this.pathResizeObserver.observe(this.pathEl);
 		}
 
+		if (this.resultContainerEl && typeof MutationObserver !== 'undefined') {
+			this.suggestionObserver = new MutationObserver(() => this.updateFooterHints());
+			this.suggestionObserver.observe(this.resultContainerEl, {
+				attributes: true,
+				subtree: true,
+				attributeFilter: ['class'],
+				childList: true,
+			});
+		}
+
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
 		this.inputEl.addEventListener('input', this.onInput);
 	}
@@ -650,6 +956,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.inputEl.removeEventListener('input', this.onInput);
 		this.pathResizeObserver?.disconnect();
 		this.pathResizeObserver = null;
+		this.suggestionObserver?.disconnect();
+		this.suggestionObserver = null;
 		this.modalEl.querySelector('.fp-header')?.remove();
 		this.modalEl.querySelector('.fp-footer')?.remove();
 		this.modalEl.classList.remove('palette-external');
@@ -666,15 +974,6 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		return this.getQueryLocation(this.inputEl?.value ?? '')?.location ?? this.currentLocation;
 	}
 
-	private getCapabilities(loc: PaletteLocation = this.getCurrentTargetLocation()): LocationCapabilities {
-		return {
-			canCreate: loc.inVault,
-			canRevealInSidebar: loc.inVault,
-			canCopyLink: loc.inVault,
-			canOpen: true,
-		};
-	}
-
 	private renderFooter(loc: PaletteLocation = this.getCurrentTargetLocation()): void {
 		let footer = this.modalEl.querySelector<HTMLElement>('.fp-footer');
 		if (!footer) {
@@ -684,29 +983,88 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			footer.empty();
 		}
 
-		const caps = this.getCapabilities(loc);
 		const modifier = Platform.isMacOS ? '⌘' : 'Ctrl+';
 		const shift = Platform.isMacOS ? '⇧' : 'Shift+';
 		const alternate = Platform.isMacOS ? '⌥' : 'Alt+';
 		const shortcuts = footer.createDiv({ cls: 'fp-footer-shortcuts' });
 		const actions = shortcuts.createDiv({ cls: 'fp-footer-actions' });
+
+		const homeDir = this.resolveHome();
 		this.renderHint(actions, 'Tab', 'Complete');
-		this.renderHint(actions, '~', 'Root');
-		this.renderHint(actions, ':', 'Reveal', !caps.canRevealInSidebar);
+		if (homeDir !== null) {
+			this.renderHint(actions, '~', 'Home');
+		}
+		this.renderHint(actions, '^', 'Vault');
+		this.renderHint(actions, ':', 'Reveal', !loc.canReveal, 'fp-hint-reveal');
 		this.renderHint(actions, '?', 'Explorer');
 		this.renderHint(actions, '*', 'App');
-		this.renderHint(actions, `${modifier}${shift}L`, 'Link', !caps.canCopyLink);
+		this.renderHint(actions, `${modifier}${shift}L`, 'Link', !loc.canLink, 'fp-hint-link');
 
 		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
 		this.renderHint(openers, '↵', 'Open');
-		this.renderHint(openers, `${shift}↵`, 'Create', !caps.canCreate);
-		this.renderHint(openers, `${modifier}${shift}↵`, 'New tab');
-		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group');
-		if (!Platform.isMobile) this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window');
+		this.renderHint(openers, `${shift}↵`, 'Create', !loc.canCreate, 'fp-hint-create');
+		this.renderHint(openers, `${modifier}${shift}↵`, 'New tab', false, 'fp-hint-tab');
+		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group', false, 'fp-hint-group');
+		if (!Platform.isMobile) {
+			this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window', false, 'fp-hint-window');
+		}
+
+		this.updateFooterHints(loc);
 	}
 
-	private renderHint(container: HTMLElement, command: string, purpose: string, disabled = false): void {
-		const hint = container.createDiv({ cls: disabled ? 'fp-hint is-disabled' : 'fp-hint' });
+	private updateFooterHints(loc: PaletteLocation = this.getCurrentTargetLocation()): void {
+		const footer = this.modalEl.querySelector<HTMLElement>('.fp-footer');
+		if (!footer) return;
+
+		const selectedEl = this.resultContainerEl?.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedEl ? this.entryBySuggestion.get(selectedEl) : null;
+		const isFile = !!entry && !entry.isParent && !entry.isFolder && !(entry.file instanceof TFolder);
+
+		const canLink = loc.canLink && isFile;
+		const canOpenInLeaf = isFile;
+
+		const linkHint = footer.querySelector<HTMLElement>('.fp-hint-link');
+		if (linkHint) {
+			linkHint.classList.toggle('is-disabled', !canLink);
+			linkHint.style.opacity = canLink ? '' : '0.4';
+		}
+
+		const tabHint = footer.querySelector<HTMLElement>('.fp-hint-tab');
+		if (tabHint) {
+			tabHint.classList.toggle('is-disabled', !canOpenInLeaf);
+			tabHint.style.opacity = canOpenInLeaf ? '' : '0.4';
+		}
+
+		const groupHint = footer.querySelector<HTMLElement>('.fp-hint-group');
+		if (groupHint) {
+			groupHint.classList.toggle('is-disabled', !canOpenInLeaf);
+			groupHint.style.opacity = canOpenInLeaf ? '' : '0.4';
+		}
+
+		const windowHint = footer.querySelector<HTMLElement>('.fp-hint-window');
+		if (windowHint) {
+			windowHint.classList.toggle('is-disabled', !canOpenInLeaf);
+			windowHint.style.opacity = canOpenInLeaf ? '' : '0.4';
+		}
+
+		const createHint = footer.querySelector<HTMLElement>('.fp-hint-create');
+		if (createHint) {
+			createHint.classList.toggle('is-disabled', !loc.canCreate);
+			createHint.style.opacity = loc.canCreate ? '' : '0.4';
+		}
+
+		const revealHint = footer.querySelector<HTMLElement>('.fp-hint-reveal');
+		if (revealHint) {
+			revealHint.classList.toggle('is-disabled', !loc.canReveal);
+			revealHint.style.opacity = loc.canReveal ? '' : '0.4';
+		}
+	}
+
+	private renderHint(container: HTMLElement, command: string, purpose: string, disabled = false, cls?: string): void {
+		const classes = ['fp-hint'];
+		if (disabled) classes.push('is-disabled');
+		if (cls) classes.push(cls);
+		const hint = container.createDiv({ cls: classes.join(' ') });
 		if (disabled) {
 			hint.style.opacity = '0.4';
 		}
@@ -738,14 +1096,19 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		if (!completedName) return;
 
+		const val = this.inputEl.value;
 		let prefix = '';
-		if (this.inputEl.value.startsWith('~')) {
-			const withoutTilde = this.inputEl.value.slice(1);
+		if (val.startsWith('^')) {
+			const withoutCaret = val.slice(1);
+			const slashIndex = withoutCaret.lastIndexOf('/');
+			prefix = slashIndex >= 0 ? `^${withoutCaret.slice(0, slashIndex + 1)}` : '^/';
+		} else if (val.startsWith('~')) {
+			const withoutTilde = val.slice(1);
 			const slashIndex = withoutTilde.lastIndexOf('/');
-			prefix = slashIndex >= 0 ? `~${withoutTilde.slice(0, slashIndex + 1)}` : '~';
+			prefix = slashIndex >= 0 ? `~${withoutTilde.slice(0, slashIndex + 1)}` : '~/';
 		} else {
-			const slashIndex = this.inputEl.value.lastIndexOf('/');
-			prefix = slashIndex >= 0 ? this.inputEl.value.slice(0, slashIndex + 1) : '';
+			const slashIndex = val.lastIndexOf('/');
+			prefix = slashIndex >= 0 ? val.slice(0, slashIndex + 1) : '';
 		}
 
 		const nextValue = `${prefix}${completedName}`;
@@ -755,6 +1118,12 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private async copySelectedLink(): Promise<void> {
+		const targetLoc = this.getCurrentTargetLocation();
+		if (!targetLoc.inVault) {
+			new Notice('Wiki-links can only be created for vault files.');
+			return;
+		}
+
 		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
 		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
 		if (!entry || entry.isParent || entry.isFolder || entry.file instanceof TFolder) {
@@ -766,22 +1135,13 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
-		const targetLoc = this.getCurrentTargetLocation();
-
 		try {
-			if (targetLoc.inVault && entry.file instanceof TFile) {
+			if (entry.file instanceof TFile) {
 				const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
 				const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
 				await navigator.clipboard.writeText(link);
 				new Notice('Link copied to clipboard.');
-				return;
 			}
-
-			// Outside vault: copy a file:/// link
-			const absPath = entry.absPath ?? (entry.file ? this.makeItemAbsPath(targetLoc, entry.file.name) : '');
-			const fileUri = `file:///${norm(absPath).replace(/^\/+/, '')}`;
-			await navigator.clipboard.writeText(fileUri);
-			new Notice('Link copied to clipboard.');
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			new Notice(`Could not copy link: ${reason}`);
@@ -948,7 +1308,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				new Notice('The sidebar only shows vault files.');
 				return;
 			}
-			const folder = this.getFolderFromLocation(targetLoc);
+			const folder = getFolderFromLocation(this.app, targetLoc);
 			const target = entry.isParent ? folder?.parent : entry.file;
 			if (!target) return;
 
@@ -969,7 +1329,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		let targetPath = '';
 		if (targetLoc.inVault) {
-			const folder = this.getFolderFromLocation(targetLoc);
+			const folder = getFolderFromLocation(this.app, targetLoc);
 			const target = entry.isParent ? folder?.parent : entry.file;
 			if (!target) return;
 			targetPath = target.path;
@@ -1028,6 +1388,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const loc = this.getQueryLocation(this.inputEl.value)?.location ?? this.currentLocation;
 
 		this.modalEl.classList.toggle('palette-external', !loc.inVault);
+		this.pathEl.classList.toggle('file-palette-outside', !loc.inVault);
 
 		this.pathEl.empty();
 		this.pathEllipsisEl = null;
@@ -1043,21 +1404,47 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const segments = splitLocationPath(loc);
 		const rootSegment = segments[0];
 
-		// 1. Icon (Click jumps to root)
+		// 1. Icon (Click jumps to root or home)
+		let iconName = 'vault';
+		if (!loc.inVault) {
+			const home = this.resolveHome();
+			if (home) {
+				const ci = Platform.isWin ? (s: string) => s.toLowerCase() : (s: string) => s;
+				const isAtOrUnderHome = ci(loc.absPath) === ci(home) || ci(loc.absPath).startsWith(ci(home) + '/');
+				iconName = isAtOrUnderHome ? 'home' : 'hard-drive';
+			} else {
+				iconName = 'hard-drive';
+			}
+		}
+
 		this.indicatorEl = this.pathEl.createSpan({
-			cls: 'fp-path-icon fp-external-indicator',
+			cls: loc.inVault
+				? 'fp-path-icon fp-external-indicator'
+				: 'fp-path-icon fp-external-indicator is-external',
 			attr: {
-				'aria-label': loc.inVault ? 'Vault root' : 'Drive root',
+				'aria-label': loc.inVault ? 'Vault root' : (iconName === 'home' ? 'Home directory' : 'Drive root'),
 				role: 'button',
 				tabindex: '-1',
 			},
 		});
-		setIcon(this.indicatorEl, loc.inVault ? 'vault' : 'hard-drive');
+		setIcon(this.indicatorEl, iconName);
 		this.indicatorEl.addEventListener('click', (e) => {
 			e.stopPropagation();
-			this.navigateToLocation(
-				loc.inVault ? this.getVaultRootLocation() : makeLocation(this.app, rootSegment.path),
-			);
+			if (loc.inVault) {
+				this.navigateToLocation(this.getVaultRootLocation());
+			} else if (iconName === 'home') {
+				const home = this.resolveHome();
+				if (home) {
+					this.navigateToLocation(makeLocation(this.app, home, {
+						browseOutsideVault: this.browseOutsideVault,
+						allowCreateOutsideVault: this.allowCreateOutsideVault,
+					}));
+				} else {
+					this.navigateToLocation(makeLocation(this.app, rootSegment.path));
+				}
+			} else {
+				this.navigateToLocation(makeLocation(this.app, rootSegment.path));
+			}
 		});
 
 		// 2. Root segment (/ or C:)
@@ -1104,7 +1491,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			segmentEl.setText(seg.name);
 			segmentEl.addEventListener('click', (e) => {
 				e.stopPropagation();
-				this.navigateToLocation(makeLocation(this.app, seg.path));
+				this.navigateToLocation(makeLocation(this.app, seg.path, {
+					browseOutsideVault: this.browseOutsideVault,
+					allowCreateOutsideVault: this.allowCreateOutsideVault,
+				}));
 			});
 			this.pathSegments.push(segmentEl);
 		}
@@ -1167,10 +1557,6 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				this.allowCreateOutsideVault,
 			).open();
 		}, 0);
-	}
-
-	private navigateToFolder(folder: TFolder): void {
-		this.navigateToLocation(locationFromFolder(this.app, folder));
 	}
 
 	private getItemSearchData(item: PaletteItem): {
@@ -1289,88 +1675,12 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		return displayProperties;
 	}
 
-	private getRawProperties(file: TFile): RawProperty[] {
-		return this.getDisplayProperties(file);
-	}
-
-	private getFolderFromLocation(loc: PaletteLocation): TFolder | null {
-		if (!loc.inVault || loc.vaultRelPath === null) return null;
-		if (loc.vaultRelPath === '/' || loc.vaultRelPath === '') {
-			return this.app.vault.getRoot();
-		}
-		const rel = loc.vaultRelPath.replace(/^\/+/, '');
-		const file = this.app.vault.getAbstractFileByPath(rel);
-		return file instanceof TFolder ? file : null;
-	}
-
-	private getParentLocation(loc: PaletteLocation = this.getCurrentTargetLocation()): PaletteLocation | null {
-		if (loc.inVault && !this.browseOutsideVault) {
-			const folder = this.getFolderFromLocation(loc);
-			if (folder?.parent) {
-				return locationFromFolder(this.app, folder.parent);
-			}
-			return null;
-		}
-		const parentPath = getParentPath(loc.absPath);
-		if (parentPath === loc.absPath) {
-			return null;
-		}
-		return makeLocation(this.app, parentPath);
-	}
-
 	private getVaultRootLocation(): PaletteLocation {
 		const root = this.app.vault.getRoot();
-		return locationFromFolder(this.app, root);
-	}
-
-	private makeItemAbsPath(loc: PaletteLocation, name: string): string {
-		return loc.absPath === '/' ? `/${name}` : norm(`${loc.absPath}/${name}`);
-	}
-
-	private listVaultFolder(loc: PaletteLocation): PaletteItem[] {
-		const targetFolder = this.getFolderFromLocation(loc);
-		if (!targetFolder) return [];
-		return targetFolder.children.map((file) => ({
-			name: file.name,
-			isFolder: file instanceof TFolder,
-			basename: file instanceof TFile ? file.basename : file.name,
-			extension: file instanceof TFile ? file.extension : '',
-			absPath: this.makeItemAbsPath(loc, file.name),
-			file,
-		}));
-	}
-
-	private async listFolder(loc: PaletteLocation): Promise<PaletteItem[]> {
-		if (loc.inVault) {
-			return this.listVaultFolder(loc);
-		}
-		if (!Platform.isDesktopApp) return [];
-		const fsModule = getFs();
-		if (!fsModule) return [];
-		try {
-			const dirents = await fsModule.promises.readdir(loc.absPath, { withFileTypes: true });
-			const items: PaletteItem[] = [];
-			for (const dirent of dirents) {
-				const isFolder = dirent.isDirectory();
-				const isFile = dirent.isFile();
-				if (!isFolder && !isFile) continue;
-				const name = dirent.name;
-				const extIndex = name.lastIndexOf('.');
-				const basename = extIndex > 0 ? name.slice(0, extIndex) : name;
-				const extension = extIndex > 0 ? name.slice(extIndex + 1) : '';
-				items.push({
-					name,
-					isFolder,
-					basename,
-					extension,
-					absPath: norm(`${loc.absPath}/${name}`),
-					file: null,
-				});
-			}
-			return items;
-		} catch {
-			return [];
-		}
+		return locationFromFolder(this.app, root, {
+			browseOutsideVault: this.browseOutsideVault,
+			allowCreateOutsideVault: this.allowCreateOutsideVault,
+		});
 	}
 
 	private filterItems(
@@ -1380,9 +1690,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	): VaultEntry[] {
 		const words = queryName.trim().split(/\s+/).filter(Boolean);
 
-		const hasParent = targetLocation.inVault
-			? (this.browseOutsideVault ? getParentPath(targetLocation.absPath) !== targetLocation.absPath : !!this.getFolderFromLocation(targetLocation)?.parent)
-			: (getParentPath(targetLocation.absPath) !== targetLocation.absPath);
+		const hasParent = targetLocation.parent() !== null;
 
 		if (!words.length) {
 			const entries: VaultEntry[] = items.map((item) => {
@@ -1558,34 +1866,88 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private getQueryLocation(query: string): { location: PaletteLocation; name: string } | null {
-		const absoluteRoot = query.startsWith('~');
-		const normalizedQuery = absoluteRoot ? query.slice(1) : query;
-		const baseLocation = absoluteRoot || (this.currentLocation.inVault && normalizedQuery.startsWith('/'))
-			? this.getVaultRootLocation()
-			: this.currentLocation;
+		const locationOptions = {
+			browseOutsideVault: this.browseOutsideVault,
+			allowCreateOutsideVault: this.allowCreateOutsideVault,
+		};
 
-		const lastSeparator = normalizedQuery.lastIndexOf('/');
-		if (lastSeparator < 0) return { location: baseLocation, name: normalizedQuery };
+		let baseLocation: PaletteLocation;
+		let remainingQuery: string;
 
-		const subPath = normalizedQuery.slice(0, lastSeparator);
-		const name = normalizedQuery.slice(lastSeparator + 1);
+		if (query === '~' || query.startsWith('~/')) {
+			const home = this.resolveHome();
+			if (home) {
+				baseLocation = makeLocation(this.app, home, locationOptions);
+				remainingQuery = query === '~' ? '' : query.slice(2);
+			} else if (Platform.isMobile) {
+				baseLocation = this.getVaultRootLocation();
+				remainingQuery = query === '~' ? '' : query.slice(2);
+			} else {
+				return { location: this.currentLocation, name: query };
+			}
+		} else if (query === '^' || query.startsWith('^/')) {
+			baseLocation = this.getVaultRootLocation();
+			remainingQuery = query === '^' ? '' : query.slice(2);
+		} else if (query.startsWith('/')) {
+			if (this.currentLocation.inVault) {
+				baseLocation = this.getVaultRootLocation();
+			} else {
+				baseLocation = getSystemRootLocation(this.app, this.currentLocation, locationOptions);
+			}
+			remainingQuery = query.slice(1);
+		} else if (/^[a-zA-Z]:(\/|\\)?/.test(query)) {
+			const drive = query.slice(0, 2).toUpperCase() + '/';
+			baseLocation = makeLocation(this.app, drive, locationOptions);
+			remainingQuery = query.slice(2).replace(/^[/\\]+/, '');
+		} else if (query.startsWith('//')) {
+			const uncMatch = query.match(/^(\/\/[^/]+\/[^/]+)(?:\/(.*))?$/);
+			if (uncMatch) {
+				baseLocation = makeLocation(this.app, uncMatch[1], locationOptions);
+				remainingQuery = uncMatch[2] ?? '';
+			} else {
+				baseLocation = this.currentLocation;
+				remainingQuery = query;
+			}
+		} else {
+			baseLocation = this.currentLocation;
+			remainingQuery = query;
+		}
+
+		const lastSeparator = remainingQuery.lastIndexOf('/');
+		if (lastSeparator < 0) {
+			return { location: baseLocation, name: remainingQuery };
+		}
+
+		const subPath = remainingQuery.slice(0, lastSeparator);
+		const name = remainingQuery.slice(lastSeparator + 1);
 
 		let resolvedAbsPath = baseLocation.absPath;
-		const relativePath = normalizedQuery.startsWith('/') ? subPath.slice(1) : subPath;
-
-		for (const segment of relativePath.split('/').filter(Boolean)) {
+		for (const segment of subPath.split('/').filter(Boolean)) {
 			if (segment === '.') continue;
 			if (segment === '..') {
 				resolvedAbsPath = getParentPath(resolvedAbsPath);
 				continue;
 			}
-			resolvedAbsPath = resolvedAbsPath === '/' ? `/${segment}` : norm(`${resolvedAbsPath}/${segment}`);
+			resolvedAbsPath = resolvedAbsPath === '/' || resolvedAbsPath.endsWith('/')
+				? `${resolvedAbsPath}${segment}`
+				: `${resolvedAbsPath}/${segment}`;
 		}
 
-		const location = makeLocation(this.app, resolvedAbsPath);
+		const location = makeLocation(this.app, resolvedAbsPath, locationOptions);
 		if (location.inVault) {
-			const folder = this.getFolderFromLocation(location);
+			const folder = getFolderFromLocation(this.app, location);
 			if (!folder) return null;
+		} else if (Platform.isDesktopApp) {
+			const fsModule = getFs();
+			if (fsModule) {
+				try {
+					if (!fsModule.existsSync(location.absPath) || !fsModule.statSync(location.absPath).isDirectory()) {
+						return null;
+					}
+				} catch {
+					return null;
+				}
+			}
 		}
 		return { location, name };
 	}
@@ -1684,13 +2046,13 @@ export default class FilePalettePlugin extends Plugin {
 		const base = vaultBase(this.app);
 		const vaultRoot = this.app.vault.getRoot();
 		const vaultRootLocation = base
-			? makeLocation(this.app, base)
-			: locationFromFolder(this.app, vaultRoot);
+			? makeLocation(this.app, base, this.settings)
+			: locationFromFolder(this.app, vaultRoot, this.settings);
 
 		if (!this.settings.browseOutsideVault) {
 			const activeFile = this.app.workspace.getActiveFile();
 			if (activeFile && !(activeFile instanceof TExternalFile) && !activeFile.path.startsWith('file:')) {
-				return locationFromFolder(this.app, activeFile.parent ?? vaultRoot);
+				return locationFromFolder(this.app, activeFile.parent ?? vaultRoot, this.settings);
 			}
 			return vaultRootLocation;
 		}
@@ -1713,7 +2075,7 @@ export default class FilePalettePlugin extends Plugin {
 			} else if (base) {
 				fileAbsPath = norm(`${base}/${activeFile.path}`);
 			} else {
-				return locationFromFolder(this.app, activeFile.parent ?? vaultRoot);
+				return locationFromFolder(this.app, activeFile.parent ?? vaultRoot, this.settings);
 			}
 		}
 
@@ -1722,11 +2084,7 @@ export default class FilePalettePlugin extends Plugin {
 		}
 
 		const parentAbsPath = getParentPath(fileAbsPath);
-		return makeLocation(this.app, parentAbsPath);
-	}
-
-	private getActiveFolder(): TFolder {
-		return this.app.workspace.getActiveFile()?.parent ?? this.app.vault.getRoot();
+		return makeLocation(this.app, parentAbsPath, this.settings);
 	}
 }
 

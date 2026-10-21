@@ -2,6 +2,9 @@
 
 A fast file and folder picker for jumping to files and browsing folders.
 
+> [!NOTE]
+> **Release Note / Breaking Change**: In v0.2.0, `~` navigates to the user's OS home directory (desktop only) instead of the vault root. To jump directly to the vault root, use `^`. Inside the vault, a leading `/` also navigates to the vault root; outside the vault, `/` navigates to the OS root directory.
+
 ## Command
 
 - `Open file palette`: opens the picker in the current note's folder
@@ -22,17 +25,19 @@ A fast file and folder picker for jumping to files and browsing folders.
 | `:` | Reveal the highlighted file or folder (including `..`) in Obsidian's file navigation sidebar |
 | `?` | Show the highlighted file or folder (including `..`) in your system file explorer (Finder or Windows Explorer) |
 | `*` | Open the highlighted file or folder with your system default app |
-| Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link |
-| `~` | Return immediately to the vault root |
+| Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link (vault files only) |
+| `^` | Return immediately to the vault root |
+| `~` | Go to the user's OS home directory (desktop only) |
+| `/` | Go to the vault root (inside vault) or OS filesystem root (outside vault) |
 
 
 ## External Files & Folders
 
 Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. When editing an external note, File Palette automatically tracks reality:
 
-- **Location tracks reality**: The palette opens in the active file’s real OS folder and shows the OS path (e.g. `C:\Users\scott\repos\docs`).
-- **Indicator marks the exception**: Inside the vault, paths stay vault-relative (`/Finance/`) with no badge or indicator. Outside the vault, a subtle hard-drive indicator appears and disabled footer shortcuts are dimmed.
-- **Quick return**: Typing `~` at any point returns straight to the vault root and clears the external indicator.
+- **Location tracks reality**: The palette opens in the active file’s real OS folder and shows the OS path (e.g. `C:/Users/scott/repos/docs`).
+- **Indicator marks the exception**: Inside the vault, paths stay vault-relative (`/Finance/`) with a `vault` icon. Outside the vault, a `home` icon appears when browsing at or under your home directory, and a `hard-drive` indicator appears elsewhere. Disabled footer shortcuts are dimmed.
+- **Quick return**: Typing `^` at any point returns straight to the vault root. Typing `~` jumps to your OS home directory.
 - **Navigation**: Selecting `..` or pressing Backspace in an empty search navigates up the folder hierarchy up to the drive root.
 
 ### Outside-the-Vault Capabilities
@@ -41,12 +46,14 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. When 
 | --- | --- | --- |
 | Enter on file | Opens file in active leaf | Opens file using Obsidian's external file mechanism (falls back to default app) |
 | Shift+Enter (create) | Creates note in vault | Disabled by default (shows notice; toggleable in settings) |
-| Ctrl+Shift+L (link) | Copies vault markdown link | Copies `file:///` URI link |
+| Ctrl+Shift+L (link) | Copies vault markdown link | Disabled (wiki-links only work for vault notes) |
 | `:` (sidebar) | Reveals item in file navigation sidebar | Disabled (the sidebar only displays vault files) |
 | `?` (explorer) | Shows in system file explorer | Shows in system file explorer |
 | `*` (app) | Opens in system default app | Opens in system default app |
 | Tab, Backspace, `..` | Navigate and complete | Navigate and complete |
-| `~` | Jumps to vault root | Jumps to vault root |
+| `^` | Jumps to vault root | Jumps to vault root |
+| `~` | Jumps to OS home directory | Jumps to OS home directory |
+| `/` | Jumps to vault root | Jumps to OS filesystem root |
 
 
 ## Settings
