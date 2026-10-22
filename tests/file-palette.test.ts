@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import FilePalettePlugin, {
 	alignFuzzyRanges,
 	classifyLiteral,
 	compareWordMatches,
+	generateExternalMarkdownLink,
 	getParentPath,
 	getSystemRootLocation,
 	makeLocation,
@@ -1783,8 +1784,42 @@ describe('external file and folder palette behavior', () => {
 		});
 		modal.inputEl.dispatchEvent(event);
 
-		expect(Notice.messages).toContain('Wiki-links can only be created for vault files.');
-		expect(clipboardWrite).not.toHaveBeenCalled();
+		const expectedLink = generateExternalMarkdownLink(norm(join(tempDir, 'outside-doc.md')), false);
+		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(expectedLink));
+		expect(Notice.messages).toContain('Link copied to clipboard.');
+	});
+
+	it('copies a folder link with Ctrl+Shift+L when outside the vault', async () => {
+		mkdirSync(join(tempDir, 'outside-folder'));
+		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
+
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		const entry = suggestions.find((s) => s.name === 'outside-folder');
+		if (!entry) throw new Error('Expected outside-folder');
+
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		const event = new KeyboardEvent('keydown', {
+			key: 'L',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		});
+		modal.inputEl.dispatchEvent(event);
+
+		const expectedLink = generateExternalMarkdownLink(norm(join(tempDir, 'outside-folder')), true);
+		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(expectedLink));
+		expect(Notice.messages).toContain('Link copied to clipboard.');
 	});
 
 	it('returns to vault root and removes .palette-external when query starts with caret', async () => {
@@ -2108,7 +2143,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 
 		const extLoc = makeLocation(app, 'C:/External');
 		expect(extLoc.canCreate).toBe(false);
-		expect(extLoc.canLink).toBe(false);
+		expect(extLoc.canLink).toBe(true);
 		expect(extLoc.canReveal).toBe(false);
 		expect(extLoc.inVault).toBe(false);
 
@@ -2125,6 +2160,39 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		expect(getParentPath('C:')).toBe('C:');
 		const driveRootLoc = makeLocation(app, 'C:/');
 		expect(driveRootLoc.parent()).toBeNull();
+	});
+});
+
+describe('generateExternalMarkdownLink formatting', () => {
+	it('formats markdown files with .md stripped from title', () => {
+		expect(generateExternalMarkdownLink('C:/Notes/Meeting.md')).toBe('[Meeting](file:///C:/Notes/Meeting.md)');
+		expect(generateExternalMarkdownLink('/Users/scott/Docs/Note.MD')).toBe('[Note](file:///Users/scott/Docs/Note.MD)');
+	});
+
+	it('preserves extensions in title for non-markdown files', () => {
+		expect(generateExternalMarkdownLink('C:/Docs/Annual Report.pdf')).toBe('[Annual Report.pdf](file:///C:/Docs/Annual%20Report.pdf)');
+		expect(generateExternalMarkdownLink('C:/Data/records.csv')).toBe('[records.csv](file:///C:/Data/records.csv)');
+	});
+
+	it('prepends exclamation mark for image files', () => {
+		expect(generateExternalMarkdownLink('C:/Images/diagram.png')).toBe('![diagram.png](file:///C:/Images/diagram.png)');
+		expect(generateExternalMarkdownLink('C:/Images/photo.JPG')).toBe('![photo.JPG](file:///C:/Images/photo.JPG)');
+		expect(generateExternalMarkdownLink('C:/Images/vector.svg')).toBe('![vector.svg](file:///C:/Images/vector.svg)');
+	});
+
+	it('formats folder links using the folder name as title even if it contains dots', () => {
+		expect(generateExternalMarkdownLink('C:/Projects/My Folder', true)).toBe('[My Folder](file:///C:/Projects/My%20Folder)');
+		expect(generateExternalMarkdownLink('C:/Projects/v1.0.release', true)).toBe('[v1.0.release](file:///C:/Projects/v1.0.release)');
+		expect(generateExternalMarkdownLink('/var/log/nginx', true)).toBe('[nginx](file:///var/log/nginx)');
+	});
+
+	it('handles root locations', () => {
+		expect(generateExternalMarkdownLink('C:/', true)).toBe('[C:](file:///C:/)');
+		expect(generateExternalMarkdownLink('/', true)).toBe('[/](file:///)');
+	});
+
+	it('handles UNC paths', () => {
+		expect(generateExternalMarkdownLink('//server/share/docs/report.pdf')).toBe('[report.pdf](file://server/share/docs/report.pdf)');
 	});
 });
 

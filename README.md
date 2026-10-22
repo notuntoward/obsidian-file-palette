@@ -25,7 +25,7 @@ A fast file and folder picker for jumping to files and browsing folders.
 | `:` | Reveal the highlighted file or folder (including `..`) in Obsidian's file navigation sidebar |
 | `?` | Show the highlighted file or folder (including `..`) in your system file explorer (Finder or Windows Explorer) |
 | `*` | Open the highlighted file or folder with your system default app |
-| Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a highlighted file's link (vault files only) |
+| Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a link to the highlighted file or folder |
 | `^` | Return immediately to the vault root |
 | `~` | Go to the user's OS home directory (desktop only) |
 | `/` | Go to the vault root (inside vault) or OS filesystem root (outside vault) |
@@ -46,7 +46,7 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. When 
 | --- | --- | --- |
 | Enter on file | Opens file in active leaf | Opens file using Obsidian's external file mechanism (falls back to default app) |
 | Shift+Enter (create) | Creates note in vault | Disabled by default (shows notice; toggleable in settings) |
-| Ctrl+Shift+L (link) | Copies vault markdown link | Disabled (wiki-links only work for vault notes) |
+| Ctrl+Shift+L (link) | Copies link in vault-configured format (files only) | Copies absolute file:/// Markdown link matching Obsidian Ctrl+drag (files and folders) |
 | `:` (sidebar) | Reveals item in file navigation sidebar | Disabled (the sidebar only displays vault files) |
 | `?` (explorer) | Shows in system file explorer | Shows in system file explorer |
 | `*` (app) | Opens in system default app | Opens in system default app |

@@ -191,6 +191,48 @@ function makeItemAbsPath(loc: { absPath: string }, name: string): string {
 	return norm(`${loc.absPath}/${name}`);
 }
 
+const EXTERNAL_LINK_IMAGE_EXTENSIONS = new Set(['bmp', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif']);
+
+export function generateExternalMarkdownLink(targetPath: string, isFolder = false): string {
+	const normalized = targetPath.replace(/\\/g, '/');
+	let trimmed = normalized;
+	if (trimmed !== '/' && !/^[a-zA-Z]:\/$/.test(trimmed)) {
+		trimmed = trimmed.replace(/\/+$/, '');
+	}
+
+	let filename = '';
+	if (/^[a-zA-Z]:\/$/.test(trimmed)) {
+		filename = trimmed.slice(0, 2);
+	} else if (trimmed === '/') {
+		filename = '/';
+	} else {
+		const lastSlash = trimmed.lastIndexOf('/');
+		filename = lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
+	}
+
+	let title = '';
+	let extension = '';
+
+	if (isFolder || trimmed === '/' || /^[a-zA-Z]:\/$/.test(trimmed)) {
+		title = filename;
+	} else {
+		const dotIndex = filename.lastIndexOf('.');
+		if (dotIndex > 0 && dotIndex < filename.length - 1) {
+			extension = filename.slice(dotIndex + 1).toLowerCase();
+		}
+		title = extension === 'md' ? filename.slice(0, dotIndex) : filename;
+	}
+
+	const encodedPath = trimmed.replace(/[\\\x00\x08\x0B\x0C\x0E-\x1F ]/g, (char) => encodeURIComponent(char));
+	const uri = encodedPath.startsWith('//')
+		? `file:${encodedPath}`
+		: encodedPath.startsWith('/')
+			? `file://${encodedPath}`
+			: `file:///${encodedPath}`;
+	const link = `[${title}](${uri})`;
+	return !isFolder && EXTERNAL_LINK_IMAGE_EXTENSIONS.has(extension) ? `!${link}` : link;
+}
+
 export class PaletteLocationImpl implements PaletteLocation {
 	public readonly absPath: string;
 	public readonly inVault: boolean;
@@ -220,7 +262,7 @@ export class PaletteLocationImpl implements PaletteLocation {
 
 		const allowCreateOutside = options.allowCreateOutsideVault ?? DEFAULT_SETTINGS.allowCreateOutsideVault;
 		this.canCreate = this.inVault || allowCreateOutside;
-		this.canLink = this.inVault;
+		this.canLink = true;
 		this.canReveal = this.inVault;
 	}
 
@@ -1018,9 +1060,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		const selectedEl = this.resultContainerEl?.querySelector<HTMLElement>('.suggestion-item.is-selected');
 		const entry = selectedEl ? this.entryBySuggestion.get(selectedEl) : null;
-		const isFile = !!entry && !entry.isParent && !entry.isFolder && !(entry.file instanceof TFolder);
+		const isFolder = !!entry && Boolean(entry.isFolder || entry.file instanceof TFolder);
+		const isFile = !!entry && !entry.isParent && !isFolder;
 
-		const canLink = loc.canLink && isFile;
+		const canLink = loc.canLink && !!entry && !entry.isParent && (loc.inVault ? isFile : true);
 		const canOpenInLeaf = isFile;
 
 		const linkHint = footer.querySelector<HTMLElement>('.fp-hint-link');
@@ -1119,29 +1162,51 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 	private async copySelectedLink(): Promise<void> {
 		const targetLoc = this.getCurrentTargetLocation();
-		if (!targetLoc.inVault) {
-			new Notice('Wiki-links can only be created for vault files.');
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+
+		if (!entry || entry.isParent) {
+			new Notice(targetLoc.inVault ? 'Select a file to copy its link.' : 'Select a file or folder to copy its link.');
 			return;
 		}
 
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
-		if (!entry || entry.isParent || entry.isFolder || entry.file instanceof TFolder) {
+		if (targetLoc.inVault && (entry.isFolder || entry.file instanceof TFolder)) {
 			new Notice('Select a file to copy its link.');
 			return;
 		}
+
 		if (!navigator.clipboard?.writeText) {
 			new Notice('Copying links is not available on this device.');
 			return;
 		}
 
 		try {
-			if (entry.file instanceof TFile) {
-				const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
-				const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
-				await navigator.clipboard.writeText(link);
-				new Notice('Link copied to clipboard.');
+			if (targetLoc.inVault) {
+				if (entry.file instanceof TFile) {
+					const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
+					const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
+					await navigator.clipboard.writeText(link);
+					new Notice('Link copied to clipboard.');
+				}
+				return;
 			}
+
+			const isFolder = Boolean(entry.isFolder || entry.file instanceof TFolder);
+			const absPath =
+				entry.absPath ??
+				(entry.file
+					? makeItemAbsPath(targetLoc, entry.file.name)
+					: entry.name
+						? makeItemAbsPath(targetLoc, entry.name)
+						: '');
+			if (!absPath) {
+				new Notice('Could not determine file path.');
+				return;
+			}
+
+			const link = generateExternalMarkdownLink(absPath, isFolder);
+			await navigator.clipboard.writeText(link);
+			new Notice('Link copied to clipboard.');
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			new Notice(`Could not copy link: ${reason}`);
