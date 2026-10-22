@@ -295,4 +295,61 @@ describe('commons adoption in obsidian-file-palette', () => {
 			VaultPathSuggestModal.closeActiveModal();
 		});
 	});
+	describe('file coloring via page color props', () => {
+		it('colors file suggestions with page color props and sets data-path', async () => {
+			const mockApp = {
+				vault: {
+					getAbstractFileByPath: vi.fn(),
+				},
+				metadataCache: {
+					getFileCache: vi.fn(),
+				},
+				workspace: {
+					on: vi.fn(() => ({})),
+				},
+				plugins: {
+					getPlugin: vi.fn((id: string) =>
+						id === 'page-color-prop'
+							? { getFileColor: (f: any) => (f.path === 'Seattle/ai-searches.md' ? '#0e9afd' : null) }
+							: null,
+					),
+				},
+			};
+
+			const modal = new VaultPathSuggestModal(
+				mockApp as unknown as App,
+				{
+					absPath: '/',
+					inVault: true,
+					vaultRelPath: '',
+					canCreate: true,
+					canLink: true,
+					canReveal: true,
+					list: () => [],
+					parent: () => null,
+				},
+				true,
+				[],
+				false,
+				false,
+				false,
+			);
+
+			const file = new TFile('ai-searches.md', 'Seattle/ai-searches.md') as unknown as TFile;
+			file.basename = 'ai-searches';
+			file.extension = 'md';
+
+			const el = document.createElement('div');
+			modal.renderSuggestion(
+				{ file: file as any, name: 'ai-searches.md', basename: 'ai-searches', extension: 'md', isParent: false },
+				el,
+			);
+
+			const nameEl = el.querySelector('.file-palette-suggestion-name') as HTMLElement;
+			expect(nameEl).not.toBeNull();
+			expect(nameEl.style.getPropertyValue('--page-color')).toBe('#0e9afd');
+			expect(nameEl.classList.contains('has-page-color')).toBe(true);
+			expect(el.getAttribute('data-path')).toBe('Seattle/ai-searches.md');
+		});
+	});
 });

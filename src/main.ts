@@ -37,6 +37,7 @@ import {
 	writeClipboardIn,
 	type CancelTimer,
 } from 'commons/windows';
+import { applyFilePageColor } from 'commons/color';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
@@ -779,7 +780,16 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		const details = element.createDiv({ cls: 'file-palette-suggestion-details' });
-		details.createDiv({ cls: 'file-palette-suggestion-name' }).setText(basename);
+		const nameEl = details.createDiv({ cls: 'file-palette-suggestion-name' });
+		nameEl.setText(basename);
+
+		if (entry.file instanceof TFile) {
+			applyFilePageColor(this.app, nameEl, entry.file);
+			element.setAttribute('data-path', entry.file.path);
+		} else if (entry.absPath && !isFolder) {
+			applyFilePageColor(this.app, nameEl, entry.absPath);
+			element.setAttribute('data-path', entry.absPath);
+		}
 		if (entry.propertyValues?.length) {
 			const properties = details.createDiv({ cls: 'file-palette-suggestion-properties' });
 			for (const propertyValue of entry.propertyValues) {

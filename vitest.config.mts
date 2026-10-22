@@ -17,6 +17,10 @@ export default defineConfig({
         replacement: path.resolve(import.meta.dirname, '../obsidian-commons/src/windows/index.ts'),
       },
       {
+        find: 'commons/color',
+        replacement: path.resolve(import.meta.dirname, '../obsidian-commons/src/color/index.ts'),
+      },
+      {
         find: 'commons/modal',
         replacement: path.resolve(import.meta.dirname, '../obsidian-commons/src/modal/index.ts'),
       },
