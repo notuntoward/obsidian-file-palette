@@ -18,6 +18,25 @@ import {
 	TFolder,
 } from 'obsidian';
 import type { SearchResult, SettingDefinitionItem } from 'obsidian';
+import {
+	alignFuzzyRanges,
+	classifyLiteral,
+	findLiteralRanges,
+	MatchQuality,
+	mergeRanges,
+	tokenize,
+} from 'commons/search';
+import {
+	focusLeafAndWindow,
+	getWindowForLeaf,
+	isLeafDetached,
+} from 'commons/workspace';
+import {
+	ownerWindow,
+	setTimeoutIn,
+	writeClipboardIn,
+	type CancelTimer,
+} from 'commons/windows';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
@@ -435,48 +454,14 @@ function normalizeSearchProperties(value: unknown): string[] {
 		.filter(Boolean))];
 }
 
-function mergeRanges(ranges: [number, number][]): [number, number][] {
-	const sorted = [...ranges].sort((left, right) => left[0] - right[0] || left[1] - right[1]);
-	const merged: [number, number][] = [];
-	for (const range of sorted) {
-		const last = merged[merged.length - 1];
-		if (last && range[0] <= last[1]) {
-			last[1] = Math.max(last[1], range[1]);
-		} else {
-			merged.push([...range]);
-		}
-	}
-	return merged;
-}
-
-export enum MatchQuality {
-	Fuzzy = 1,
-	Substring = 2,
-	WordPrefix = 3,
-	WholeWord = 4,
-}
-
-export function tokenize(text: string): string[] {
-	return text
-		.replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, '$1 $2')
-		.replace(/(\p{Ll})(\p{Lu})/gu, '$1 $2')
-		.replace(/(\p{L})(\p{N})/gu, '$1 $2')
-		.replace(/(\p{N})(\p{L})/gu, '$1 $2')
-		.toLowerCase()
-		.match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
-}
-
-export function classifyLiteral(
-	text: string,
-	tokens: readonly string[],
-	queryWord: string,
-): MatchQuality | null {
-	const word = queryWord.toLowerCase();
-	if (tokens.includes(word)) return MatchQuality.WholeWord;
-	if (tokens.some((t) => t.startsWith(word))) return MatchQuality.WordPrefix;
-	if (text.toLowerCase().includes(word)) return MatchQuality.Substring;
-	return null;
-}
+export {
+	alignFuzzyRanges,
+	classifyLiteral,
+	findLiteralRanges,
+	MatchQuality,
+	mergeRanges,
+	tokenize,
+};
 
 export interface WordMatch {
 	quality: MatchQuality;
@@ -492,60 +477,6 @@ export function compareWordMatches(a: WordMatch, b: WordMatch): number {
 	);
 }
 
-function findLiteralRanges(text: string, queryWord: string): [number, number][] {
-	const ranges: [number, number][] = [];
-	const lowerText = text.toLowerCase();
-	const lowerWord = queryWord.toLowerCase();
-	if (!lowerWord) return ranges;
-	let index = lowerText.indexOf(lowerWord);
-	while (index >= 0) {
-		ranges.push([index, index + lowerWord.length]);
-		index = lowerText.indexOf(lowerWord, index + lowerWord.length);
-	}
-	return ranges;
-}
-
-export function alignFuzzyRanges(
-	text: string,
-	ranges: [number, number][],
-	queryWord: string,
-): [number, number][] {
-	const query = queryWord.toLowerCase();
-	const lower = text.toLowerCase();
-	const isWordChar = (char: string) => /[\p{L}\p{N}]/u.test(char);
-	const out: [number, number][] = [];
-	let consumed = 0;
-	for (const [rangeStart, rangeEnd] of [...ranges].sort((a, b) => a[0] - b[0] || a[1] - b[1])) {
-		let start = rangeStart;
-		let wordStart = rangeStart;
-		while (wordStart > 0 && isWordChar(text[wordStart - 1])) wordStart--;
-		const gap = rangeStart - wordStart;
-		const previous = out[out.length - 1];
-		if (
-			gap > 0 &&
-			gap <= consumed &&
-			(!previous || previous[1] <= wordStart) &&
-			lower.slice(wordStart, rangeStart) === query.slice(consumed - gap, consumed)
-		) {
-			let remaining = gap;
-			while (remaining > 0 && out.length) {
-				const last = out[out.length - 1];
-				const length = last[1] - last[0];
-				if (length <= remaining) {
-					out.pop();
-					remaining -= length;
-				} else {
-					last[1] -= remaining;
-					remaining = 0;
-				}
-			}
-			start = wordStart;
-		}
-		out.push([start, rangeEnd]);
-		consumed += rangeEnd - rangeStart;
-	}
-	return mergeRanges(out);
-}
 
 interface SearchableField {
 	text: string;
@@ -588,16 +519,16 @@ type AppWithExternalActions = App & {
 
 export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private static activeModal: VaultPathSuggestModal | null = null;
-	private static pendingNavigationTimeout: number | ReturnType<typeof setTimeout> | null = null;
+	private static cancelPendingNavigation: CancelTimer | null = null;
 
 	public static getActiveModal(): VaultPathSuggestModal | null {
 		return VaultPathSuggestModal.activeModal;
 	}
 
 	public static closeActiveModal(except?: VaultPathSuggestModal): void {
-		if (VaultPathSuggestModal.pendingNavigationTimeout !== null) {
-			window.clearTimeout(VaultPathSuggestModal.pendingNavigationTimeout as number);
-			VaultPathSuggestModal.pendingNavigationTimeout = null;
+		if (VaultPathSuggestModal.cancelPendingNavigation) {
+			VaultPathSuggestModal.cancelPendingNavigation();
+			VaultPathSuggestModal.cancelPendingNavigation = null;
 		}
 		if (VaultPathSuggestModal.activeModal && VaultPathSuggestModal.activeModal !== except) {
 			const modalToClose = VaultPathSuggestModal.activeModal;
@@ -1160,7 +1091,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.inputEl.setSelectionRange(nextValue.length, nextValue.length);
 	}
 
-	private async copySelectedLink(): Promise<void> {
+	private async copySelectedLink(): Promise<void> { 
 		const targetLoc = this.getCurrentTargetLocation();
 		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
 		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
@@ -1175,18 +1106,19 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
-		if (!navigator.clipboard?.writeText) {
-			new Notice('Copying links is not available on this device.');
-			return;
-		}
+		const win = ownerWindow(this.containerEl ?? this.modalEl ?? this.contentEl ?? this.inputEl) ?? window;
 
 		try {
 			if (targetLoc.inVault) {
 				if (entry.file instanceof TFile) {
 					const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
 					const link = this.app.fileManager.generateMarkdownLink(entry.file, sourcePath);
-					await navigator.clipboard.writeText(link);
-					new Notice('Link copied to clipboard.');
+					const success = await writeClipboardIn(win, link);
+					if (success) {
+						new Notice('Link copied to clipboard.');
+					} else {
+						new Notice('Copying links is not available on this device.');
+					}
 				}
 				return;
 			}
@@ -1205,8 +1137,12 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 
 			const link = generateExternalMarkdownLink(absPath, isFolder);
-			await navigator.clipboard.writeText(link);
-			new Notice('Link copied to clipboard.');
+			const success = await writeClipboardIn(win, link);
+			if (success) {
+				new Notice('Link copied to clipboard.');
+			} else {
+				new Notice('Copying links is not available on this device.');
+			}
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			new Notice(`Could not copy link: ${reason}`);
@@ -1377,8 +1313,18 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			const target = entry.isParent ? folder?.parent : entry.file;
 			if (!target) return;
 
-			const fileExplorerLeaf = this.app.workspace.getLeavesOfType('file-explorer')[0];
-			const fileExplorerView = fileExplorerLeaf?.view as
+			const modalWin = ownerWindow(this.containerEl ?? this.modalEl ?? this.contentEl ?? this.inputEl);
+			const fileExplorerLeaves = this.app.workspace.getLeavesOfType('file-explorer');
+			const fileExplorerLeaf = (modalWin
+				? fileExplorerLeaves.find((leaf) => !isLeafDetached(leaf) && getWindowForLeaf(leaf) === modalWin)
+				: undefined) ?? fileExplorerLeaves.find((leaf) => !isLeafDetached(leaf)) ?? fileExplorerLeaves[0];
+
+			if (!fileExplorerLeaf) {
+				new Notice('The Obsidian file navigator is not available.');
+				return;
+			}
+
+			const fileExplorerView = fileExplorerLeaf.view as
 				| FileExplorerViewLike
 				| undefined;
 			if (!fileExplorerView?.revealInFolder) {
@@ -1386,6 +1332,9 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				return;
 			}
 
+			if (typeof this.app.workspace.setActiveLeaf === 'function') {
+				focusLeafAndWindow(this.app, fileExplorerLeaf);
+			}
 			(this.app.workspace as { revealLeaf?: (leaf: unknown) => void }).revealLeaf?.(fileExplorerLeaf);
 			fileExplorerView.revealInFolder(target);
 			this.close();
@@ -1605,13 +1554,14 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private navigateToLocation(location: PaletteLocation): void {
+		const win = ownerWindow(this.containerEl ?? this.modalEl ?? this.contentEl ?? this.inputEl) ?? window;
 		this.close();
-		if (VaultPathSuggestModal.pendingNavigationTimeout !== null) {
-			window.clearTimeout(VaultPathSuggestModal.pendingNavigationTimeout as number);
-			VaultPathSuggestModal.pendingNavigationTimeout = null;
+		if (VaultPathSuggestModal.cancelPendingNavigation) {
+			VaultPathSuggestModal.cancelPendingNavigation();
+			VaultPathSuggestModal.cancelPendingNavigation = null;
 		}
-		VaultPathSuggestModal.pendingNavigationTimeout = window.setTimeout(() => {
-			VaultPathSuggestModal.pendingNavigationTimeout = null;
+		VaultPathSuggestModal.cancelPendingNavigation = setTimeoutIn(win, () => {
+			VaultPathSuggestModal.cancelPendingNavigation = null;
 			new VaultPathSuggestModal(
 				this.app,
 				location,
@@ -2040,8 +1990,14 @@ export default class FilePalettePlugin extends Plugin {
 				this.app.workspace.on('window-close', (win, window) => {
 					const active = VaultPathSuggestModal.getActiveModal();
 					if (active) {
-						const doc = active.modalEl?.ownerDocument;
-						if (doc && (doc === win?.doc || doc === window?.document || doc.defaultView === window || doc.defaultView === win?.win)) {
+						const doc = active.modalEl?.ownerDocument ?? active.containerEl?.ownerDocument;
+						const closedDoc = win?.doc ?? window?.document;
+						const modalWindow = ownerWindow(active.modalEl ?? active.containerEl);
+						const closedWindow = window ?? win?.win ?? win?.doc?.defaultView;
+						if (
+							(doc && closedDoc && doc === closedDoc) ||
+							(modalWindow && closedWindow && modalWindow === closedWindow)
+						) {
 							VaultPathSuggestModal.closeActiveModal();
 						}
 					}

@@ -656,7 +656,7 @@ describe('file palette picker', () => {
 
 		expect(event.defaultPrevented).toBe(true);
 		expect(generateMarkdownLink).toHaveBeenCalledWith(rootFile, 'current/source.md');
-		expect(Notice.messages).toEqual(['Link copied to clipboard.']);
+		await vi.waitFor(() => expect(Notice.messages).toEqual(['Link copied to clipboard.']));
 		expect(modal.modalEl.querySelector('.fp-path')).not.toBeNull();
 	});
 
@@ -1786,7 +1786,7 @@ describe('external file and folder palette behavior', () => {
 
 		const expectedLink = generateExternalMarkdownLink(norm(join(tempDir, 'outside-doc.md')), false);
 		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(expectedLink));
-		expect(Notice.messages).toContain('Link copied to clipboard.');
+		await vi.waitFor(() => expect(Notice.messages).toContain('Link copied to clipboard.'));
 	});
 
 	it('copies a folder link with Ctrl+Shift+L when outside the vault', async () => {
@@ -1819,7 +1819,7 @@ describe('external file and folder palette behavior', () => {
 
 		const expectedLink = generateExternalMarkdownLink(norm(join(tempDir, 'outside-folder')), true);
 		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(expectedLink));
-		expect(Notice.messages).toContain('Link copied to clipboard.');
+		await vi.waitFor(() => expect(Notice.messages).toContain('Link copied to clipboard.'));
 	});
 
 	it('returns to vault root and removes .palette-external when query starts with caret', async () => {

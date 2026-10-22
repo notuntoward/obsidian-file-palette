@@ -12,8 +12,29 @@
     "isolatedModules": true,
     "strictNullChecks": true,
     "skipLibCheck": true,
-    "lib": ["DOM", "ES2020"],
-    "types": ["node", "vitest/globals"]
+    "lib": [
+      "DOM",
+      "ES2020"
+    ],
+    "types": [
+      "node",
+      "vitest/globals"
+    ],
+    "paths": {
+      "obsidian": [
+        "./node_modules/obsidian"
+      ],
+      "commons/*": [
+        "../obsidian-commons/src/*/index.ts"
+      ],
+      "commons/internals": [
+        "../obsidian-commons/src/internals.ts"
+      ]
+    }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "*.mts"
+  ]
 }
