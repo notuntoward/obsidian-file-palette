@@ -30,6 +30,7 @@ import {
 	focusLeafAndWindow,
 	getWindowForLeaf,
 	isLeafDetached,
+	revealInFileExplorer,
 } from 'commons/workspace';
 import {
 	ownerWindow,
@@ -507,10 +508,6 @@ interface PropertyMatch {
 	property: string;
 	value: string;
 	match: SearchResult | null;
-}
-
-interface FileExplorerViewLike {
-	revealInFolder?: (file: TAbstractFile) => void;
 }
 
 type AppWithExternalActions = App & {
@@ -1329,24 +1326,17 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				? fileExplorerLeaves.find((leaf) => !isLeafDetached(leaf) && getWindowForLeaf(leaf) === modalWin)
 				: undefined) ?? fileExplorerLeaves.find((leaf) => !isLeafDetached(leaf)) ?? fileExplorerLeaves[0];
 
-			if (!fileExplorerLeaf) {
-				new Notice('The Obsidian file navigator is not available.');
-				return;
-			}
-
-			const fileExplorerView = fileExplorerLeaf.view as
-				| FileExplorerViewLike
-				| undefined;
-			if (!fileExplorerView?.revealInFolder) {
-				new Notice('The Obsidian file navigator is not available.');
-				return;
-			}
-
-			if (typeof this.app.workspace.setActiveLeaf === 'function') {
+			if (fileExplorerLeaf) {
 				focusLeafAndWindow(this.app, fileExplorerLeaf);
+				(this.app.workspace as { revealLeaf?: (leaf: unknown) => void }).revealLeaf?.(fileExplorerLeaf);
 			}
-			(this.app.workspace as { revealLeaf?: (leaf: unknown) => void }).revealLeaf?.(fileExplorerLeaf);
-			fileExplorerView.revealInFolder(target);
+
+			const success = revealInFileExplorer(this.app, target, { preferredLeaf: fileExplorerLeaf });
+			if (!success) {
+				new Notice('The Obsidian file navigator is not available.');
+				return;
+			}
+
 			this.close();
 			return;
 		}

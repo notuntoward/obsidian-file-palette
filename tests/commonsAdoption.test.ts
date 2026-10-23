@@ -161,6 +161,84 @@ describe('commons adoption in obsidian-file-palette', () => {
 			expect(revealLeaf).toHaveBeenCalledWith(popoutLeaf);
 			expect(focusSpy).toHaveBeenCalledWith(mockApp, popoutLeaf);
 		});
+
+		it('reveals via internal file-explorer plugin when leaf.view.revealInFolder is missing (regression test)', () => {
+			const rootFolder = new TFolder('', '');
+			const file = new TFile('test.md', 'test.md');
+			(file as any).parent = rootFolder;
+			rootFolder.children.push(file);
+
+			const mainWin = window;
+			const revealInFolderInternal = vi.fn();
+
+			// Real Obsidian: leaf.view.revealInFolder is undefined before revealLeaf or deferred load
+			const leaf: any = {
+				view: { getViewType: () => 'file-explorer' },
+				getContainer: () => ({ win: mainWin }),
+			};
+
+			const mockApp: any = {
+				vault: {
+					getRoot: () => rootFolder,
+					getAbstractFileByPath: vi.fn((path: string) => (path === '' ? rootFolder : file)),
+					getFileByPath: vi.fn(() => file),
+				},
+				workspace: {
+					getActiveFile: () => file,
+					getLeavesOfType: vi.fn((type: string) => (type === 'file-explorer' ? [leaf] : [])),
+					revealLeaf: vi.fn(),
+					setActiveLeaf: vi.fn(),
+				},
+				internalPlugins: {
+					getPluginById: (id: string) =>
+						id === 'file-explorer' ? { instance: { revealInFolder: revealInFolderInternal } } : null,
+				},
+			};
+
+			const modal = new VaultPathSuggestModal(
+				mockApp as App,
+				{
+					absPath: '/',
+					inVault: true,
+					vaultRelPath: '',
+					canCreate: true,
+					canLink: true,
+					canReveal: true,
+					list: () => [],
+					parent: () => null,
+				},
+				true,
+				[],
+				false,
+				false,
+				false,
+			);
+
+			modal.containerEl = document.createElement('div');
+			document.body.appendChild(modal.containerEl);
+			modal.resultContainerEl = document.createElement('div');
+			modal.containerEl.appendChild(modal.resultContainerEl);
+
+			const itemEl = document.createElement('div');
+			itemEl.className = 'suggestion-item is-selected';
+			modal.resultContainerEl.appendChild(itemEl);
+
+			const entry = {
+				name: 'test.md',
+				path: 'test.md',
+				file,
+				isFolder: false,
+			};
+			(modal as any).entryBySuggestion.set(itemEl, entry);
+
+			const closeSpy = vi.spyOn(modal, 'close');
+
+			(modal as any).runSelectedOperator(':');
+
+			expect(revealInFolderInternal).toHaveBeenCalledWith(file);
+			expect(Notice.messages).not.toContain('The Obsidian file navigator is not available.');
+			expect(closeSpy).toHaveBeenCalled();
+		});
 	});
 
 	describe('clipboard link copy owner window scoping', () => {
