@@ -187,6 +187,19 @@ describe('file palette picker', () => {
 		vi.unstubAllGlobals();
 	});
 
+	
+	function findSettingDefinition(name: string): any {
+		const settingTab = plugin.settingTabs[0];
+		for (const def of settingTab.getSettingDefinitions()) {
+			if ('name' in def && (def as any).name === name) return def;
+			if ('items' in def && Array.isArray((def as any).items)) {
+				const match = (def as any).items.find((item: any) => item.name === name);
+				if (match) return match;
+			}
+		}
+		return undefined;
+	}
+
 	function runCommand(id: string): void {
 		const command = plugin.commands.find((item) => item.id === id);
 		if (!command) throw new Error(`Expected command "${id}" to be registered`);
@@ -263,11 +276,59 @@ describe('file palette picker', () => {
 			.toBe('Return');
 	});
 
+	it('organizes settings into unheaded general, Search, and Outside the vault groups with safe defaults', () => {
+		const settingTab = plugin.settingTabs[0];
+		const defs = settingTab.getSettingDefinitions();
+		expect(defs).toHaveLength(3);
+
+		// Top: no heading (general)
+		expect(defs[0]).toMatchObject({
+			name: 'Show command title',
+			control: { key: 'showCommandTitle', defaultValue: true },
+		});
+
+		// Group: Search
+		expect(defs[1]).toMatchObject({
+			type: 'group',
+			heading: 'Search',
+		});
+		const searchGroup = defs[1] as any;
+		expect(searchGroup.items?.map((item: any) => item.name)).toEqual([
+			'Search properties',
+			'Show matching properties',
+		]);
+
+		// Group: Outside the vault
+		expect(defs[2]).toMatchObject({
+			type: 'group',
+			heading: 'Outside the vault',
+		});
+		const outsideGroup = defs[2] as any;
+		expect(outsideGroup.items?.map((item: any) => item.name)).toEqual([
+			'Browse outside vault',
+			'Allow creating files outside vault',
+		]);
+
+		// Both outside vault defaults are off
+		const browseDef = outsideGroup.items[0];
+		const createDef = outsideGroup.items[1];
+		expect(browseDef.control.defaultValue).toBe(false);
+		expect(createDef.control.defaultValue).toBe(false);
+		expect(plugin.settings.browseOutsideVault).toBe(false);
+		expect(plugin.settings.allowCreateOutsideVault).toBe(false);
+
+		// Allow creating files outside vault is disabled when browseOutsideVault is false
+		const isDisabled = typeof createDef.control.disabled === 'function'
+			? createDef.control.disabled()
+			: createDef.control.disabled;
+		expect(isDisabled).toBe(true);
+	});
+
 	it('allows the command title to be hidden from plugin settings without hiding the path', async () => {
 		const settingTab = plugin.settingTabs[0];
-		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Show command title');
+		const definition = findSettingDefinition('Show command title');
 		expect(definition?.control?.key).toBe('showCommandTitle');
-		expect(settingTab.getSettingDefinitions().find(({ name }) => name === 'Show matching properties')?.control?.key)
+		expect(findSettingDefinition('Show matching properties')?.control?.key)
 			.toBe('showPropertyMatches');
 		await settingTab.setControlValue('showCommandTitle', false);
 		expect(plugin.settings.showCommandTitle).toBe(false);
@@ -275,7 +336,7 @@ describe('file palette picker', () => {
 			showCommandTitle: false,
 			searchProperties: ['title'],
 			showPropertyMatches: false,
-			browseOutsideVault: true,
+			browseOutsideVault: false,
 			allowCreateOutsideVault: false,
 		});
 
@@ -324,7 +385,7 @@ describe('file palette picker', () => {
 				rating: 5,
 			},
 		});
-		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		const definition = findSettingDefinition('Search properties');
 		if (!definition?.render) throw new Error('Expected a custom property setting renderer');
 		const setting = new Setting(document.createElement('div'));
 		definition.render(setting, {} as never);
@@ -388,7 +449,7 @@ describe('file palette picker', () => {
 		metadataByFile.set(matchingFile, { frontmatter: { tags: ['apple pie', 'banana bread'] } });
 		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
 		const settingTab = plugin.settingTabs[0];
-		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
 		await setting?.text?.change('title, tags');
@@ -433,7 +494,7 @@ describe('file palette picker', () => {
 	it('matches orderless search terms across filename and properties', async () => {
 		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
 		const settingTab = plugin.settingTabs[0];
-		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
 		await setting?.text?.change('title, fake-property');
@@ -481,7 +542,7 @@ describe('file palette picker', () => {
 	it('merges highlight ranges when multiple search terms hit the same property in any order', async () => {
 		await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
 		const settingTab = plugin.settingTabs[0];
-		const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
 		await setting?.text?.change('title, fake-property');
@@ -1167,7 +1228,7 @@ describe('file palette picker', () => {
 
 		it('ranks whole word in authors above weak fuzzy hits in filename and title', async () => {
 			const settingTab = plugin.settingTabs[0];
-			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
 			await setting?.text?.change('title, authors');
@@ -1204,7 +1265,7 @@ describe('file palette picker', () => {
 
 		it('includes files when different query words match different properties', async () => {
 			const settingTab = plugin.settingTabs[0];
-			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
 			await setting?.text?.change('title, authors');
@@ -1226,7 +1287,7 @@ describe('file palette picker', () => {
 
 		it('excludes files when one query word is absent everywhere', async () => {
 			const settingTab = plugin.settingTabs[0];
-			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
 			await setting?.text?.change('title, authors');
@@ -1248,7 +1309,7 @@ describe('file palette picker', () => {
 
 		it('excludes matches that only span across two list items', async () => {
 			const settingTab = plugin.settingTabs[0];
-			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
 			await setting?.text?.change('authors');
@@ -1297,7 +1358,7 @@ describe('file palette picker', () => {
 		it('aligns highlight ranges with the displayed text for camel-case and list items', async () => {
 			await plugin.settingTabs[0].setControlValue('showPropertyMatches', true);
 			const settingTab = plugin.settingTabs[0];
-			const definition = settingTab.getSettingDefinitions().find(({ name }) => name === 'Search properties');
+			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
 			await setting?.text?.change('authors');
@@ -1662,6 +1723,7 @@ describe('external file and folder palette behavior', () => {
 
 		plugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
 		await plugin.onload();
+		plugin.settings.browseOutsideVault = true;
 	});
 
 	afterEach(() => {

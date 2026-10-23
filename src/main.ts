@@ -53,7 +53,7 @@ const DEFAULT_SETTINGS: FilePaletteSettings = {
 	showCommandTitle: true,
 	searchProperties: ['title'],
 	showPropertyMatches: false,
-	browseOutsideVault: true,
+	browseOutsideVault: false,
 	allowCreateOutsideVault: false,
 };
 
@@ -2247,52 +2247,65 @@ class FilePaletteSettingTab extends PluginSettingTab {
 				},
 			},
 			{
-				name: 'Search properties',
-				desc: 'Comma-separated frontmatter properties to search alongside file names. Only string and string list values are searched.',
-				render: (setting) => {
-					let propertySuggest: PropertyNameSuggest | null = null;
-					setting.addText((text) => {
-						const saveSearchProperties = (value: string): Promise<void> =>
-							this.saveSearchProperties(value, (nextValue) => text.setValue(nextValue));
-						text
-							.setPlaceholder('title, category')
-							.setValue(this.plugin.settings.searchProperties.join(', '))
-							.onChange(saveSearchProperties);
-						propertySuggest = new PropertyNameSuggest(
-							this.app,
-							saveSearchProperties,
-							text.inputEl,
-						);
-					});
-					return () => propertySuggest?.close();
-				},
+				type: 'group',
+				heading: 'Search',
+				items: [
+					{
+						name: 'Search properties',
+						desc: 'Comma-separated frontmatter properties to search alongside file names. Only string and string list values are searched.',
+						render: (setting) => {
+							let propertySuggest: PropertyNameSuggest | null = null;
+							setting.addText((text) => {
+								const saveSearchProperties = (value: string): Promise<void> =>
+									this.saveSearchProperties(value, (nextValue) => text.setValue(nextValue));
+								text
+									.setPlaceholder('title, category')
+									.setValue(this.plugin.settings.searchProperties.join(', '))
+									.onChange(saveSearchProperties);
+								propertySuggest = new PropertyNameSuggest(
+									this.app,
+									saveSearchProperties,
+									text.inputEl,
+								);
+							});
+							return () => propertySuggest?.close();
+						},
+					},
+					{
+						name: 'Show matching properties',
+						desc: 'Show configured string and string list properties below each matching file name, with matched text highlighted.',
+						control: {
+							type: 'toggle',
+							key: 'showPropertyMatches',
+							defaultValue: DEFAULT_SETTINGS.showPropertyMatches,
+						},
+					},
+				],
 			},
 			{
-				name: 'Show matching properties',
-				desc: 'Show configured string and string list properties below each matching file name, with matched text highlighted.',
-				control: {
-					type: 'toggle',
-					key: 'showPropertyMatches',
-					defaultValue: DEFAULT_SETTINGS.showPropertyMatches,
-				},
-			},
-			{
-				name: 'Browse outside vault',
-				desc: 'Allow the palette to open in and navigate to folders outside the vault. When off, the palette stays inside the vault as before.',
-				control: {
-					type: 'toggle',
-					key: 'browseOutsideVault',
-					defaultValue: DEFAULT_SETTINGS.browseOutsideVault,
-				},
-			},
-			{
-				name: 'Allow creating files outside vault',
-				desc: 'Let Shift+Enter create files while browsing outside the vault.',
-				control: {
-					type: 'toggle',
-					key: 'allowCreateOutsideVault',
-					defaultValue: DEFAULT_SETTINGS.allowCreateOutsideVault,
-				},
+				type: 'group',
+				heading: 'Outside the vault',
+				items: [
+					{
+						name: 'Browse outside vault',
+						desc: 'Allow the palette to open in and navigate to folders outside the vault. When off, the palette stays inside the vault as before.',
+						control: {
+							type: 'toggle',
+							key: 'browseOutsideVault',
+							defaultValue: DEFAULT_SETTINGS.browseOutsideVault,
+						},
+					},
+					{
+						name: 'Allow creating files outside vault',
+						desc: 'Let Shift+Enter create files while browsing outside the vault.',
+						control: {
+							type: 'toggle',
+							key: 'allowCreateOutsideVault',
+							defaultValue: DEFAULT_SETTINGS.allowCreateOutsideVault,
+							disabled: () => !this.plugin.settings.browseOutsideVault,
+						},
+					},
+				],
 			},
 		];
 	}
@@ -2318,6 +2331,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 		this.plugin.settings[key] = value;
 		try {
 			await this.plugin.saveSettings();
+			(this as any).refreshDomState?.();
 		} catch (error) {
 			this.plugin.settings[key] = previousValue;
 			const reason = error instanceof Error ? error.message : String(error);

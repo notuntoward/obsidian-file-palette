@@ -3,9 +3,9 @@
 A fast file and folder picker for jumping to files and browsing folders.
 
 > [!IMPORTANT]
-> **Notice (External File Access)**: On desktop, this plugin can access and browse files and folders outside your Obsidian vault when the **Browse outside vault** setting is enabled (the default). This is required to support Obsidian 1.14.2+'s native external note editing capabilities—allowing you to navigate, search, open, and link notes located anywhere on your computer (such as in your home directory or external repositories) from the palette.
+> **Notice (External File Access)**: On desktop, this plugin can access and browse files and folders outside your Obsidian vault when the **Browse outside vault** setting is enabled (disabled by default). This capability is available to support Obsidian 1.14.2+'s native external note editing—allowing you to navigate, search, open, and link notes located anywhere on your computer (such as in your home directory or external repositories) from the palette.
 >
-> If you prefer to restrict File Palette strictly to your vault, you can toggle off **Browse outside vault** in settings at any time. In addition, creating files outside the vault via Shift+Enter is disabled by default and requires explicitly enabling **Allow creating files outside vault**.
+> If you wish to use File Palette with notes outside your vault, enable **Browse outside vault** in settings. Creating files outside the vault via Shift+Enter is also disabled by default and requires explicitly enabling **Allow creating files outside vault**.
 
 > [!NOTE]
 > **Release Note / Breaking Change**: In v0.2.0, `~` navigates to the user's OS home directory (desktop only) instead of the vault root. To jump directly to the vault root, use `^`. Inside the vault, a leading `/` also navigates to the vault root; outside the vault, `/` navigates to the OS root directory.
@@ -38,7 +38,7 @@ A fast file and folder picker for jumping to files and browsing folders.
 
 ## External Files & Folders
 
-Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. When editing an external note, File Palette automatically tracks reality:
+Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. To support this workflow, File Palette can browse and interact with notes in external folders when enabled in settings (**Browse outside vault**, defaults to disabled). When editing an external note with this setting enabled, File Palette automatically tracks reality:
 
 - **Location tracks reality**: The palette opens in the active file's real OS folder and shows the OS path (e.g. `C:/Users/scott/repos/docs`).
 - **Indicator marks the exception**: Inside the vault, paths stay vault-relative (`/Finance/`) with a `vault` icon. Outside the vault, a `home` icon appears when browsing at or under your home directory, and a `hard-drive` indicator appears elsewhere. Disabled footer shortcuts are dimmed.
@@ -64,7 +64,13 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. When 
 ## Settings
 
 - **Show command title**: Toggle showing the "File palette" heading above the current folder path in the picker modal (defaults to enabled). When disabled, the folder path remains visible.
+
+### Search
+
 - **Search properties**: Comma-separated frontmatter properties to search alongside file names (defaults to `title`). Offers autocomplete suggestions for properties found in your vault, indicating unsupported properties. Only string and string list values are searched.
 - **Show matching properties**: Toggle displaying configured frontmatter property values underneath each matching file name in the suggestion list (defaults to disabled). When enabled, matched text across all search terms is highlighted.
-- **Browse outside vault**: Allow the palette to open in and navigate to folders outside the vault. When off, the palette stays inside the vault as before (defaults to enabled).
-- **Allow creating files outside vault**: Let Shift+Enter create files while browsing outside the vault on desktop (defaults to disabled).
+
+### Outside the vault
+
+- **Browse outside vault**: Allow the palette to open in and navigate to folders outside the vault. When off, the palette stays inside the vault (defaults to disabled).
+- **Allow creating files outside vault**: Let Shift+Enter create files while browsing outside the vault on desktop (defaults to disabled; disabled when browsing outside vault is off).
