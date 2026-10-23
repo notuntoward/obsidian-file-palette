@@ -56,6 +56,7 @@ export class Setting {
 	static instances: Setting[] = [];
 	containerEl: any;
 	settingEl: any;
+	controlEl: HTMLElement;
 	name = '';
 	toggle: {
 		value: boolean;
@@ -75,6 +76,7 @@ export class Setting {
 
 	constructor(_containerEl: any) {
 		this.containerEl = _containerEl;
+		this.controlEl = _containerEl;
 		Setting.instances.push(this);
 	}
 

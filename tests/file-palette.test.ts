@@ -200,6 +200,27 @@ describe('file palette picker', () => {
 		return undefined;
 	}
 
+	function propertyPickerInput(setting: Setting): HTMLInputElement {
+		const input = setting.controlEl.querySelector<HTMLInputElement>('.commons-property-picker-input');
+		if (!input) throw new Error('Expected the property picker input');
+		return input;
+	}
+
+	function addSearchProperty(setting: Setting, property: string): void {
+		const input = propertyPickerInput(setting);
+		input.value = property;
+		const suggester = AbstractInputSuggest.instances.at(-1);
+		const option = suggester?.suggestions().find((item: any) => item.value === property);
+		if (!suggester || !option) throw new Error(`Expected a picker option for "${property}"`);
+		suggester.selectSuggestion(option, new KeyboardEvent('keydown'));
+	}
+
+	function setSearchProperties(setting: Setting, properties: string[]): void {
+		const selected = setting.controlEl.querySelectorAll<HTMLButtonElement>('.commons-property-picker-remove');
+		for (const button of Array.from(selected)) button.click();
+		for (const property of properties) addSearchProperty(setting, property);
+	}
+
 	function runCommand(id: string): void {
 		const command = plugin.commands.find((item) => item.id === id);
 		if (!command) throw new Error(`Expected command "${id}" to be registered`);
@@ -389,32 +410,19 @@ describe('file palette picker', () => {
 		if (!definition?.render) throw new Error('Expected a custom property setting renderer');
 		const setting = new Setting(document.createElement('div'));
 		definition.render(setting, {} as never);
-		expect(setting?.text?.value).toBe('title');
-		await setting?.text?.change('title, ');
-		setting?.text?.inputEl.setSelectionRange(setting.text.value.length, setting.text.value.length);
+		expect(setting.controlEl.querySelector('[aria-label="Remove title"]')).not.toBeNull();
 		const propertySuggest = AbstractInputSuggest.instances.at(-1);
-		const suggestions = propertySuggest?.suggestions();
-		expect(suggestions?.find((s: any) => s.property === 'category')?.isAllowed).toBe(true);
-		expect(suggestions?.find((s: any) => s.property === 'tags')?.isAllowed).toBe(true);
-		expect(suggestions?.find((s: any) => s.property === 'rating')?.isAllowed).toBe(false);
+		const suggestions = propertySuggest?.suggestions('').map((item: any) => item.value);
+		expect(suggestions).toEqual(expect.arrayContaining(['category', 'tags']));
+		expect(suggestions).not.toContain('rating');
 
-		const allowedEl = document.createElement('div');
-		propertySuggest?.renderSuggestion({ property: 'tags', isAllowed: true }, allowedEl);
-		expect(allowedEl.textContent).toBe('tags');
-		expect(allowedEl.classList.contains('fp-property-disabled')).toBe(false);
-
-		const disabledEl = document.createElement('div');
-		propertySuggest?.renderSuggestion({ property: 'rating', isAllowed: false }, disabledEl);
-		expect(disabledEl.classList.contains('fp-property-disabled')).toBe(true);
-		expect(disabledEl.querySelector('.fp-property-unsupported')?.textContent).toBe(' (unsupported)');
-
-		propertySuggest?.select('rating');
-		expect(setting?.text?.inputEl.value).toBe('title, ');
-		expect(Notice.messages).toContain('Property "rating" is not a string or string list.');
-
-		propertySuggest?.select('tags');
-		expect(setting?.text?.inputEl.value).toBe('title, tags, ');
+		addSearchProperty(setting, 'tags');
 		expect(plugin.settings.searchProperties).toEqual(['title', 'tags']);
+		expect(setting.controlEl.querySelector('[aria-label="Remove tags"]')).not.toBeNull();
+
+		addSearchProperty(setting, 'future-property');
+		expect(plugin.settings.searchProperties).toEqual(['title', 'tags', 'future-property']);
+		expect(Notice.messages).toEqual([]);
 
 		const categoryMatch = addFile(currentFolder, 'category-match.md');
 		metadataByFile.set(categoryMatch, { frontmatter: { tags: ['distinctive phrase', 'other'] } });
@@ -452,7 +460,7 @@ describe('file palette picker', () => {
 		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
-		await setting?.text?.change('title, tags');
+		setSearchProperties(setting, ['title', 'tags']);
 
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
@@ -497,7 +505,7 @@ describe('file palette picker', () => {
 		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
-		await setting?.text?.change('title, fake-property');
+		setSearchProperties(setting, ['title', 'fake-property']);
 
 		const steadyLinks = addFile(currentFolder, 'Steady Links Plugin.md');
 		metadataByFile.set(steadyLinks, {
@@ -545,7 +553,7 @@ describe('file palette picker', () => {
 		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
-		await setting?.text?.change('title, fake-property');
+		setSearchProperties(setting, ['title', 'fake-property']);
 
 		const steadyLinks = addFile(currentFolder, 'Steady Links Plugin.md');
 		metadataByFile.set(steadyLinks, {
@@ -1231,7 +1239,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			await setting?.text?.change('title, authors');
+			setSearchProperties(setting, ['title', 'authors']);
 
 			const fragmented = addFile(currentFolder, 'DePinto23partisanEconLens.md');
 			metadataByFile.set(fragmented, {
@@ -1268,7 +1276,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			await setting?.text?.change('title, authors');
+			setSearchProperties(setting, ['title', 'authors']);
 
 			const multiMatch = addFile(currentFolder, 'unrelated-filename.md');
 			metadataByFile.set(multiMatch, {
@@ -1290,7 +1298,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			await setting?.text?.change('title, authors');
+			setSearchProperties(setting, ['title', 'authors']);
 
 			const partialMatch = addFile(currentFolder, 'unrelated-filename.md');
 			metadataByFile.set(partialMatch, {
@@ -1312,7 +1320,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			await setting?.text?.change('authors');
+			setSearchProperties(setting, ['authors']);
 
 			const file = addFile(currentFolder, 'spanning-test.md');
 			metadataByFile.set(file, {
@@ -1361,7 +1369,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			await setting?.text?.change('authors');
+			setSearchProperties(setting, ['authors']);
 
 			const file = addFile(currentFolder, 'Hong20energyForecastingReview.md');
 			metadataByFile.set(file, {

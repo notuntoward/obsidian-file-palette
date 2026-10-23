@@ -1,5 +1,4 @@
 import {
-	AbstractInputSuggest,
 	App,
 	FileSystemAdapter,
 	normalizePath,
@@ -39,6 +38,7 @@ import {
 	type CancelTimer,
 } from 'commons/windows';
 import { applyFilePageColor } from 'commons/color';
+import { collectVaultMetadata, ValuePicker } from 'commons/properties';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
@@ -2109,117 +2109,6 @@ export default class FilePalettePlugin extends Plugin {
 	}
 }
 
-interface PropertySuggestion {
-	property: string;
-	isAllowed: boolean;
-}
-
-class PropertyNameSuggest extends AbstractInputSuggest<PropertySuggestion> {
-	private readonly properties: PropertySuggestion[];
-
-	constructor(
-		app: App,
-		private readonly onSelectProperty: (value: string) => void,
-		private readonly propertyInputEl: HTMLInputElement,
-	) {
-		super(app, propertyInputEl);
-		this.properties = this.collectPropertyNames();
-		this.onSelect((suggestion) => {
-			if (!suggestion.isAllowed) return;
-			this.onSelectProperty(this.replaceCurrentProperty(suggestion.property));
-		});
-	}
-
-	renderSuggestion(suggestion: PropertySuggestion, element: HTMLElement): void {
-		if (suggestion.isAllowed) {
-			element.setText(suggestion.property);
-		} else {
-			element.addClass('fp-property-disabled');
-			const nameSpan = element.createSpan({ cls: 'fp-property-name' });
-			nameSpan.setText(suggestion.property);
-			const labelSpan = element.createSpan({ cls: 'fp-property-unsupported' });
-			labelSpan.setText(' (unsupported)');
-		}
-	}
-
-	selectSuggestion(suggestion: PropertySuggestion, evt: MouseEvent | KeyboardEvent): void {
-		if (!suggestion.isAllowed) {
-			new Notice(`Property "${suggestion.property}" is not a string or string list.`);
-			return;
-		}
-		super.selectSuggestion(suggestion, evt);
-	}
-
-	protected getSuggestions(_query: string): PropertySuggestion[] {
-		const value = this.getValue();
-		const cursor = this.propertyInputEl.selectionStart ?? value.length;
-		const tokenStart = value.lastIndexOf(',', cursor - 1) + 1;
-		const currentToken = value.slice(tokenStart, cursor).trim();
-		const alreadySelected = new Set(
-			value.slice(0, tokenStart).split(',').map((property) => property.trim().toLowerCase()).filter(Boolean),
-		);
-		const search = prepareFuzzySearch(currentToken);
-		const matches: { suggestion: PropertySuggestion; score: number }[] = [];
-		for (const suggestion of this.properties) {
-			if (alreadySelected.has(suggestion.property.toLowerCase())) continue;
-			const match = currentToken ? search(suggestion.property) : { score: 0, matches: [] };
-			if (match) matches.push({ suggestion, score: match.score });
-		}
-		return matches
-			.sort(
-				(left, right) =>
-					Number(right.suggestion.isAllowed) - Number(left.suggestion.isAllowed) ||
-					right.score - left.score ||
-					left.suggestion.property.localeCompare(right.suggestion.property),
-			)
-			.map(({ suggestion }) => suggestion);
-	}
-
-	private collectPropertyNames(): PropertySuggestion[] {
-		const allowed = new Set<string>();
-		const disallowed = new Set<string>();
-
-		for (const file of this.app.vault.getMarkdownFiles()) {
-			const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-			if (!frontmatter) continue;
-			for (const [property, value] of Object.entries(frontmatter)) {
-				if (value === null || value === undefined) continue;
-				if (
-					typeof value === 'string' ||
-					(Array.isArray(value) && value.every((item) => typeof item === 'string'))
-				) {
-					allowed.add(property);
-				} else {
-					disallowed.add(property);
-				}
-			}
-		}
-
-		const allPropertyNames = new Set([...allowed, ...disallowed]);
-		const result: PropertySuggestion[] = [];
-		for (const property of allPropertyNames) {
-			const isAllowed = allowed.has(property) && !disallowed.has(property);
-			result.push({ property, isAllowed });
-		}
-		return result;
-	}
-
-	private replaceCurrentProperty(property: string): string {
-		const value = this.getValue();
-		const cursor = this.propertyInputEl.selectionStart ?? value.length;
-		let tokenStart = value.lastIndexOf(',', cursor - 1) + 1;
-		while (tokenStart < cursor && /\s/.test(value[tokenStart])) tokenStart++;
-		const tokenEndIndex = value.indexOf(',', cursor);
-		const tokenEnd = tokenEndIndex < 0 ? value.length : tokenEndIndex;
-		const suffix = value.slice(tokenEnd);
-		const nextValue = `${value.slice(0, tokenStart)}${property}${suffix || ', '}`;
-		const nextCursor = tokenStart + property.length + (suffix ? 0 : 2);
-		this.setValue(nextValue);
-		this.propertyInputEl.setSelectionRange(nextCursor, nextCursor);
-		return nextValue;
-	}
-}
-
 class FilePaletteSettingTab extends PluginSettingTab {
 	constructor(app: App, private readonly plugin: FilePalettePlugin) {
 		super(app, plugin);
@@ -2242,23 +2131,29 @@ class FilePaletteSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: 'Search properties',
-						desc: 'Comma-separated frontmatter properties to search alongside file names. Only string and string list values are searched.',
+						desc: 'Frontmatter properties to search alongside file names. Only string and string list values are searched. Type a property to add it if it is not suggested.',
 						render: (setting) => {
-							let propertySuggest: PropertyNameSuggest | null = null;
-							setting.addText((text) => {
-								const saveSearchProperties = (value: string): Promise<void> =>
-									this.saveSearchProperties(value, (nextValue) => text.setValue(nextValue));
-								text
-									.setPlaceholder('title, category')
-									.setValue(this.plugin.settings.searchProperties.join(', '))
-									.onChange(saveSearchProperties);
-								propertySuggest = new PropertyNameSuggest(
-									this.app,
-									saveSearchProperties,
-									text.inputEl,
-								);
+							let picker: ValuePicker | null = null;
+							const catalog = collectVaultMetadata(this.app);
+							const supportedKinds = new Set(['string', 'string-list', 'null']);
+							const suggestions = catalog.properties
+								.filter(
+									({ kinds }) =>
+										kinds.some((kind) => kind === 'string' || kind === 'string-list') &&
+										kinds.every((kind) => supportedKinds.has(kind)),
+								)
+								.map(({ name }) => name);
+							picker = new ValuePicker(this.app, setting.controlEl, {
+								suggestions,
+								value: this.plugin.settings.searchProperties,
+								multiple: true,
+								placeholder: 'Add a property',
+								ariaLabel: 'Search properties',
+								onChange: (values) => {
+									void this.saveSearchProperties(values, (nextValues) => picker?.setValue(nextValues));
+								},
 							});
-							return () => propertySuggest?.close();
+							return () => picker?.destroy();
 						},
 					},
 					{
@@ -2329,14 +2224,14 @@ class FilePaletteSettingTab extends PluginSettingTab {
 		}
 	}
 
-	private async saveSearchProperties(value: string, setValue: (value: string) => void): Promise<void> {
+	private async saveSearchProperties(value: string[], setValue: (value: string[]) => void): Promise<void> {
 		const previousProperties = this.plugin.settings.searchProperties;
-		this.plugin.settings.searchProperties = normalizeSearchProperties(value.split(','));
+		this.plugin.settings.searchProperties = normalizeSearchProperties(value);
 		try {
 			await this.plugin.saveSettings();
 		} catch (error) {
 			this.plugin.settings.searchProperties = previousProperties;
-			setValue(previousProperties.join(', '));
+			setValue([...previousProperties]);
 			const reason = error instanceof Error ? error.message : String(error);
 			new Notice(`Could not save file palette settings: ${reason}`);
 		}
