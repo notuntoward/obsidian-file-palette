@@ -163,10 +163,19 @@ export class FileSystemAdapter {
 }
 
 export class Modal {
+        static instances: Modal[] = [];
+
 	app: any;
 	modalEl: HTMLElement;
 	contentEl: any;
 	titleEl: HTMLElement;
+        scope = {
+                register: (
+                        _modifiers: string[] | null,
+                        _key: string | null,
+                        _callback: (event: KeyboardEvent) => false | void,
+                ) => ({}),
+        };
 
 	constructor(app: any) {
 		this.app = app;
@@ -175,6 +184,7 @@ export class Modal {
 		this.contentEl = document.createElement('div');
 		this.titleEl = document.createElement('div');
 		this.modalEl.append(this.titleEl, this.contentEl);
+                Modal.instances.push(this);
 	}
 
 	open(): void {
@@ -355,6 +365,18 @@ export function renderMatches(
 }
 
 function installDomHelpers(): void {
+	if (!('createEl' in HTMLElement.prototype)) {
+		Object.defineProperty(HTMLElement.prototype, 'createEl', {
+			value(this: HTMLElement, tag: string, options?: { cls?: string; text?: string; type?: string }): HTMLElement {
+				const element = document.createElement(tag);
+				if (options?.cls) element.className = options.cls;
+				if (options?.text) element.textContent = options.text;
+				if (options?.type && 'type' in element) (element as HTMLInputElement).type = options.type;
+				this.appendChild(element);
+				return element;
+			},
+		});
+	}
 	if ('createDiv' in HTMLElement.prototype) return;
 
 	Object.defineProperties(HTMLElement.prototype, {

@@ -2131,7 +2131,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: 'Search properties',
-						desc: 'Frontmatter properties to search alongside file names. Only string and string list values are searched. Type a property to add it if it is not suggested.',
+						desc: 'Frontmatter properties to search alongside file names. Only string and string list values are searched. Choose a suggestion or type a new property; new names require confirmation.',
 						render: (setting) => {
 							let picker: ValuePicker | null = null;
 							const catalog = collectVaultMetadata(this.app);
@@ -2145,6 +2145,8 @@ class FilePaletteSettingTab extends PluginSettingTab {
 								.map(({ name }) => name);
 							picker = new ValuePicker(this.app, setting.controlEl, {
 								suggestions,
+								kind: 'property',
+								classPrefix: 'file-palette',
 								value: this.plugin.settings.searchProperties,
 								multiple: true,
 								placeholder: 'Add a property',

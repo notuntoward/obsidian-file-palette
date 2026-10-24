@@ -24,6 +24,7 @@ import * as ObsidianMock from './__mocks__/obsidian';
 import {
 	AbstractInputSuggest,
 	FileSystemAdapter,
+	Modal,
 	Notice,
 	Platform,
 	Setting,
@@ -83,6 +84,7 @@ describe('file palette picker', () => {
 		vi.unstubAllGlobals();
 		VaultPathSuggestModal.closeActiveModal();
 		SuggestModal.instances.length = 0;
+		Modal.instances.length = 0;
 		AbstractInputSuggest.instances.length = 0;
 		Setting.instances.length = 0;
 		Notice.messages.length = 0;
@@ -206,21 +208,27 @@ describe('file palette picker', () => {
 		return input;
 	}
 
-	function addSearchProperty(setting: Setting, property: string): void {
+	async function addSearchProperty(setting: Setting, property: string): Promise<void> {
 		const input = propertyPickerInput(setting);
 		input.value = property;
 		const suggester = AbstractInputSuggest.instances.at(-1);
 		const option = suggester?.suggestions().find((item: any) => item.value === property);
 		if (!suggester || !option) throw new Error(`Expected a picker option for "${property}"`);
-		suggester.selectSuggestion(option, new KeyboardEvent('keydown'));
+		const selection = suggester.selectSuggestion(option, new KeyboardEvent('keydown'));
+		if (option.kind === 'create') {
+			const modal = Modal.instances.at(-1);
+			const addButton = modal?.contentEl.querySelector('button.mod-cta') as HTMLButtonElement | null;
+			if (!addButton) throw new Error(`Expected confirmation for new property "${property}"`);
+			addButton.click();
+		}
+		await selection;
 	}
 
-	function setSearchProperties(setting: Setting, properties: string[]): void {
+	async function setSearchProperties(setting: Setting, properties: string[]): Promise<void> {
 		const selected = setting.controlEl.querySelectorAll<HTMLButtonElement>('.commons-property-picker-remove');
 		for (const button of Array.from(selected)) button.click();
-		for (const property of properties) addSearchProperty(setting, property);
+		for (const property of properties) await addSearchProperty(setting, property);
 	}
-
 	function runCommand(id: string): void {
 		const command = plugin.commands.find((item) => item.id === id);
 		if (!command) throw new Error(`Expected command "${id}" to be registered`);
@@ -407,7 +415,7 @@ describe('file palette picker', () => {
 			},
 		});
 		const definition = findSettingDefinition('Search properties');
-		if (!definition?.render) throw new Error('Expected a custom property setting renderer');
+		if (!definition?.render) throw new Error('Expected the property picker renderer');
 		const setting = new Setting(document.createElement('div'));
 		definition.render(setting, {} as never);
 		expect(setting.controlEl.querySelector('[aria-label="Remove title"]')).not.toBeNull();
@@ -416,11 +424,11 @@ describe('file palette picker', () => {
 		expect(suggestions).toEqual(expect.arrayContaining(['category', 'tags']));
 		expect(suggestions).not.toContain('rating');
 
-		addSearchProperty(setting, 'tags');
+		await addSearchProperty(setting, 'tags');
 		expect(plugin.settings.searchProperties).toEqual(['title', 'tags']);
 		expect(setting.controlEl.querySelector('[aria-label="Remove tags"]')).not.toBeNull();
 
-		addSearchProperty(setting, 'future-property');
+		await addSearchProperty(setting, 'future-property');
 		expect(plugin.settings.searchProperties).toEqual(['title', 'tags', 'future-property']);
 		expect(Notice.messages).toEqual([]);
 
@@ -460,7 +468,7 @@ describe('file palette picker', () => {
 		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
-		setSearchProperties(setting, ['title', 'tags']);
+		await setSearchProperties(setting, ['title', 'tags']);
 
 		runCommand('open-palette');
 		const modal = SuggestModal.instances.at(-1);
@@ -505,7 +513,7 @@ describe('file palette picker', () => {
 		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
-		setSearchProperties(setting, ['title', 'fake-property']);
+		await setSearchProperties(setting, ['title', 'fake-property']);
 
 		const steadyLinks = addFile(currentFolder, 'Steady Links Plugin.md');
 		metadataByFile.set(steadyLinks, {
@@ -553,7 +561,7 @@ describe('file palette picker', () => {
 		const definition = findSettingDefinition('Search properties');
 		const setting = new Setting(document.createElement('div'));
 		definition?.render?.(setting, {} as never);
-		setSearchProperties(setting, ['title', 'fake-property']);
+		await setSearchProperties(setting, ['title', 'fake-property']);
 
 		const steadyLinks = addFile(currentFolder, 'Steady Links Plugin.md');
 		metadataByFile.set(steadyLinks, {
@@ -1239,7 +1247,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			setSearchProperties(setting, ['title', 'authors']);
+			await setSearchProperties(setting, ['title', 'authors']);
 
 			const fragmented = addFile(currentFolder, 'DePinto23partisanEconLens.md');
 			metadataByFile.set(fragmented, {
@@ -1276,7 +1284,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			setSearchProperties(setting, ['title', 'authors']);
+			await setSearchProperties(setting, ['title', 'authors']);
 
 			const multiMatch = addFile(currentFolder, 'unrelated-filename.md');
 			metadataByFile.set(multiMatch, {
@@ -1298,7 +1306,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			setSearchProperties(setting, ['title', 'authors']);
+			await setSearchProperties(setting, ['title', 'authors']);
 
 			const partialMatch = addFile(currentFolder, 'unrelated-filename.md');
 			metadataByFile.set(partialMatch, {
@@ -1320,7 +1328,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			setSearchProperties(setting, ['authors']);
+			await setSearchProperties(setting, ['authors']);
 
 			const file = addFile(currentFolder, 'spanning-test.md');
 			metadataByFile.set(file, {
@@ -1369,7 +1377,7 @@ describe('file palette picker', () => {
 			const definition = findSettingDefinition('Search properties');
 			const setting = new Setting(document.createElement('div'));
 			definition?.render?.(setting, {} as never);
-			setSearchProperties(setting, ['authors']);
+			await setSearchProperties(setting, ['authors']);
 
 			const file = addFile(currentFolder, 'Hong20energyForecastingReview.md');
 			metadataByFile.set(file, {

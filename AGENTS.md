@@ -22,7 +22,6 @@ change commons and tell the user: see the global rule "Obsidian shared library" 
 `obsidian-commons/AGENTS.md`. Rules that moved to commons are enforced by its guardrail
 tests; the rules below are the plugin-specific ones that remain.
 
-
 ## Tooling
 
 - Lint: `npm run lint` (ESLint with `eslint-plugin-obsidianmd` rules, zero warnings).
@@ -48,13 +47,6 @@ When setting up or configuring a newly created plugin repository:
    - Configures branch protection on `main` (requires 'ESLint and build', 1 approval, blocks force-pushes).
    - Enables native repository auto-merge (`allow_auto_merge`).
    - Grants GitHub Actions permission to approve PRs (`can_approve_pull_request_reviews: true`) so Dependabot patch and minor updates auto-merge.
-
-## When building an Obsidian plugin inside a git worktree
-
-If the vault loads this plugin via a junction to the main checkout, a build
-inside a worktree is not automatically visible to Obsidian. Re-point the vault
-junction with the shared relink script, or finish tests in the worktree and
-build in the main checkout. See the global rule in `~/.config/kilo/AGENTS.md`.
 
 # Obsidian Plugin Development Rules
 
