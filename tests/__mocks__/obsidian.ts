@@ -143,9 +143,11 @@ export class Setting {
 
 export class Notice {
 	static messages: string[] = [];
+	static durations: (number | undefined)[] = [];
 
-	constructor(message: string, _timeout?: number) {
+	constructor(message: string, duration?: number) {
 		Notice.messages.push(message);
+		Notice.durations.push(duration);
 	}
 	setMessage(_message: string): this {
 		return this;

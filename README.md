@@ -32,18 +32,18 @@ A fast file and folder picker for jumping to files and browsing folders.
 | `*` | Open the highlighted file or folder with your system default app |
 | Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a link to the highlighted file or folder |
 | `^` | Return immediately to the vault root |
-| `~` | Go to the user's OS home directory (desktop only) |
-| `/` | Go to the vault root (inside vault) or OS filesystem root (outside vault) |
+| `~` | Go to the user's OS home directory (desktop only; requires Browse outside vault) |
+| `/` | Go to the vault root (inside vault) or OS filesystem root (outside vault; requires Browse outside vault) |
 
 
 ## External Files & Folders
 
-Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. To support this workflow, File Palette can browse and interact with notes in external folders when enabled in settings (**Browse outside vault**, defaults to disabled). When editing an external note with this setting enabled, File Palette automatically tracks reality:
+Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File Palette can browse and interact with external folders only when **Browse outside vault** is enabled (defaults to disabled). When it is off, the palette stays in the vault and blocks external paths, parent traversal beyond the vault, external file opens, links, and system file actions. When enabled, File Palette automatically tracks reality:
 
 - **Location tracks reality**: The palette opens in the active file's real OS folder and shows the OS path (e.g. `C:/Users/scott/repos/docs`).
 - **Indicator marks the exception**: Inside the vault, paths stay vault-relative (`/Finance/`) with a `vault` icon. Outside the vault, a `home` icon appears when browsing at or under your home directory, and a `hard-drive` indicator appears elsewhere. Disabled footer shortcuts are dimmed.
-- **Quick return**: Typing `^` at any point returns straight to the vault root. Typing `~` jumps to your OS home directory.
-- **Navigation**: Selecting `..` or pressing Backspace in an empty search navigates up the folder hierarchy up to the drive root.
+- **Quick return**: Typing `^` at any point returns straight to the vault root. When outside-vault browsing is enabled, typing `~` jumps to your OS home directory.
+- **Navigation**: Selecting `..` or pressing Backspace in an empty search navigates up the folder hierarchy. With outside-vault browsing disabled, navigation stops at the vault root.
 
 ### Outside-the-Vault Capabilities
 
@@ -72,5 +72,5 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. To su
 
 ### Outside the vault
 
-- **Browse outside vault**: Allow the palette to open in and navigate to folders outside the vault. When off, the palette stays inside the vault (defaults to disabled).
-- **Allow creating files outside vault**: Let Shift+Enter create files while browsing outside the vault on desktop (defaults to disabled; disabled when browsing outside vault is off).
+- **Browse outside vault**: Allow the palette to open in and navigate to folders outside the vault, open external files, copy external links, and use system file actions on external items. When off, the palette stays inside the vault and blocks those external actions (defaults to disabled).
+- **Allow creating files outside vault**: Separately allow Shift+Enter to create files while browsing outside the vault on desktop (defaults to disabled; disabled when browsing outside vault is off).

@@ -1766,6 +1766,114 @@ describe('external file and folder palette behavior', () => {
 		expect(pathEl?.getAttribute('title')).toBe(expectedDisplay);
 	});
 
+	it('keeps navigation inside the vault when outside-vault browsing is disabled', async () => {
+		plugin.settings.browseOutsideVault = false;
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1) as VaultPathSuggestModal | undefined;
+		if (!modal) throw new Error('Expected modal to open');
+
+		expect(modal.currentLocation.inVault).toBe(true);
+		expect(modal.currentLocation.absPath).toBe('C:/ObsidianVault');
+
+		modal.inputEl.value = '~';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(modal.currentLocation.inVault).toBe(true);
+		expect(modal.currentLocation.absPath).toBe('C:/ObsidianVault');
+		expect(Notice.messages).toContain(
+			'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.',
+		);
+		expect(Notice.durations.at(-1)).toBe(8000);
+		expect(
+			Array.from(modal.modalEl.querySelectorAll('.fp-hint.is-disabled .fp-hint-command')).map((el) => el.textContent),
+		).toContain('~');
+
+		expect(await Promise.resolve(modal.getSuggestions('../'))).toEqual([]);
+		expect(await Promise.resolve(modal.getSuggestions(tempDir))).toEqual([]);
+	});
+
+	it('shows the browse-setting notice for parent navigation attempts at the vault root', async () => {
+		plugin.settings.browseOutsideVault = false;
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1) as VaultPathSuggestModal | undefined;
+		if (!modal) throw new Error('Expected modal to open');
+
+		const parentSuggestion = (await Promise.resolve(modal.getSuggestions('..'))).find((entry) => entry.isParent);
+		expect(parentSuggestion).toBeDefined();
+		if (!parentSuggestion) throw new Error('Expected parent suggestion');
+		modal.onChooseSuggestion(parentSuggestion);
+		expect(modal.currentLocation.absPath).toBe('C:/ObsidianVault');
+		expect(Notice.messages.at(-1)).toBe(
+			'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.',
+		);
+		expect(Notice.durations.at(-1)).toBe(8000);
+
+		modal.inputEl.value = '';
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+		expect(modal.currentLocation.absPath).toBe('C:/ObsidianVault');
+		expect(Notice.messages.at(-1)).toBe(
+			'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.',
+		);
+		expect(Notice.durations.at(-1)).toBe(8000);
+	});
+
+	it('does not navigate into an external folder from a stale suggestion when browsing is disabled', () => {
+		plugin.settings.browseOutsideVault = false;
+		const modal = new VaultPathSuggestModal(app, tempDir, true, ['title'], false, false, false);
+		modal.open();
+		const entry = {
+			file: null,
+			isParent: false,
+			name: 'outside-doc.md',
+			isFolder: false,
+			absPath: norm(join(tempDir, 'outside-doc.md')),
+		};
+
+		modal.onChooseSuggestion(entry);
+
+		expect(modal.currentLocation.inVault).toBe(true);
+		expect(openedDefaultAppPaths).toEqual([]);
+		expect(Notice.messages).toContain(
+			'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.',
+		);
+		expect(Notice.durations.at(-1)).toBe(8000);
+	});
+
+	it('blocks external open, copy-link, and system actions when browsing is disabled', () => {
+		plugin.settings.browseOutsideVault = false;
+		const modal = new VaultPathSuggestModal(app, tempDir, true, ['title'], false, false, false);
+		modal.open();
+		const absPath = norm(join(tempDir, 'outside-doc.md'));
+		const externalFile = app.vault.getFileByPath(`file:${absPath}`);
+		if (!(externalFile instanceof TExternalFile)) throw new Error('Expected external file');
+		const entry = {
+			file: externalFile,
+			isParent: false,
+			name: 'outside-doc.md',
+			isFolder: false,
+			absPath,
+		};
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }),
+		);
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '?', bubbles: true, cancelable: true }));
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: '*', bubbles: true, cancelable: true }));
+		modal.inputEl.dispatchEvent(
+			new KeyboardEvent('keydown', { key: 'L', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }),
+		);
+
+		expect(openedFiles).toEqual([]);
+		expect(openedDefaultAppPaths).toEqual([]);
+		expect(shownPaths).toEqual([]);
+		expect(Notice.messages).toHaveLength(4);
+		expect(Notice.durations.slice(-4)).toEqual([8000, 8000, 8000, 8000]);
+	});
+
 	it('lists external files from disk', async () => {
 		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
 		const modal = SuggestModal.instances.at(-1);
@@ -1808,7 +1916,7 @@ describe('external file and folder palette behavior', () => {
 		expect(Notice.messages).toContain('The sidebar only shows vault files.');
 	});
 
-	it('refuses to create files outside vault by default and shows notice', async () => {
+	it('explains how to enable outside-vault file creation when Shift+Enter is disabled', async () => {
 		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
 		const modal = SuggestModal.instances.at(-1);
 		if (!modal) throw new Error('Expected modal to open');
@@ -1816,7 +1924,10 @@ describe('external file and folder palette behavior', () => {
 		modal.inputEl.value = 'new-outside-file';
 		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
 
-		expect(Notice.messages).toContain('Creating files outside the vault is turned off.');
+		expect(Notice.messages).toContain(
+			'Blocked by the “Allow creating files outside vault” setting. Change it in File Palette settings.',
+		);
+		expect(Notice.durations.at(-1)).toBe(8000);
 	});
 
 	it('allows creating files outside vault when allowCreateOutsideVault setting is enabled', async () => {
@@ -2106,7 +2217,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 	});
 
 	it('~ alone in query navigates to user home directory and sets home icon', () => {
-		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
 		modal.open();
 
 		modal.inputEl.value = '~';
@@ -2120,7 +2231,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 	});
 
 	it('~/ navigates relative to home directory', () => {
-		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
 		modal.open();
 
 		modal.inputEl.value = '~/';
@@ -2165,7 +2276,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 	});
 
 	it('^name without slash is treated as ordinary search text', () => {
-		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path');
+		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path', true, ['title'], false, true);
 		modal.open();
 
 		modal.inputEl.value = '^searchterm';
@@ -2183,7 +2294,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		expect(inVaultModal.currentLocation.absPath).toBe('C:/TestVault');
 
 		// Outside vault on Windows
-		const outsideModal = new VaultPathSuggestModal(app, 'C:/Users/scott/repos');
+		const outsideModal = new VaultPathSuggestModal(app, 'C:/Users/scott/repos', true, ['title'], false, true);
 		outsideModal.open();
 		outsideModal.inputEl.value = '/';
 		outsideModal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2221,14 +2332,21 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 
 		const extLoc = makeLocation(app, 'C:/External');
 		expect(extLoc.canCreate).toBe(false);
-		expect(extLoc.canLink).toBe(true);
+		expect(extLoc.canLink).toBe(false);
 		expect(extLoc.canReveal).toBe(false);
 		expect(extLoc.inVault).toBe(false);
+		expect(await extLoc.list()).toEqual([]);
+		expect(extLoc.parent()).toBeNull();
+		expect(makeLocation(app, 'C:/External', { allowCreateOutsideVault: true }).canCreate).toBe(false);
 
-		const extLocAllowed = makeLocation(app, 'C:/External', { allowCreateOutsideVault: true });
+		const extLocAllowed = makeLocation(app, 'C:/External', {
+			browseOutsideVault: true,
+			allowCreateOutsideVault: true,
+		});
 		expect(extLocAllowed.canCreate).toBe(true);
+		expect(extLocAllowed.canLink).toBe(true);
 
-		const parentLoc = extLoc.parent();
+		const parentLoc = extLocAllowed.parent();
 		expect(parentLoc?.absPath).toBe('C:/');
 		expect(parentLoc?.parent()).toBeNull();
 	});
@@ -2273,4 +2391,3 @@ describe('generateExternalMarkdownLink formatting', () => {
 		expect(generateExternalMarkdownLink('//server/share/docs/report.pdf')).toBe('[report.pdf](file://server/share/docs/report.pdf)');
 	});
 });
-

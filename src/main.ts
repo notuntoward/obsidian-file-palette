@@ -281,9 +281,10 @@ export class PaletteLocationImpl implements PaletteLocation {
 			this.vaultRelPath = inVault ? abs.slice(base.length) || '/' : null;
 		}
 
+		const browseOutside = options.browseOutsideVault ?? DEFAULT_SETTINGS.browseOutsideVault;
 		const allowCreateOutside = options.allowCreateOutsideVault ?? DEFAULT_SETTINGS.allowCreateOutsideVault;
-		this.canCreate = this.inVault || allowCreateOutside;
-		this.canLink = true;
+		this.canCreate = this.inVault || (browseOutside && allowCreateOutside);
+		this.canLink = this.inVault || browseOutside;
 		this.canReveal = this.inVault;
 	}
 
@@ -302,6 +303,9 @@ export class PaletteLocationImpl implements PaletteLocation {
 	}
 
 	async list(): Promise<PaletteItem[]> {
+		if (!this.inVault && !(this.options.browseOutsideVault ?? DEFAULT_SETTINGS.browseOutsideVault)) {
+			return [];
+		}
 		if (this.inVault) {
 			return this.listSync();
 		}
@@ -347,7 +351,8 @@ export class PaletteLocationImpl implements PaletteLocation {
 
 	parent(): PaletteLocation | null {
 		const browseOutside = this.options.browseOutsideVault ?? DEFAULT_SETTINGS.browseOutsideVault;
-		if (this.inVault && !browseOutside) {
+		if (!browseOutside) {
+			if (!this.inVault) return null;
 			const folder = getFolderFromLocation(this.app, this);
 			if (folder?.parent) {
 				return locationFromFolder(this.app, folder.parent, this.options);
@@ -566,6 +571,14 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private readonly onInput = (): void => {
 		if (this.isClearingShortcut) return;
 		const val = this.inputEl.value;
+		if ((val === '~' || val.startsWith('~/')) && !this.browseOutsideVault) {
+			this.isClearingShortcut = true;
+			this.inputEl.value = '';
+			this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+			this.isClearingShortcut = false;
+			this.noticeBrowseOutsideVaultDisabled();
+			return;
+		}
 		if (val === '^') {
 			this.currentLocation = this.getVaultRootLocation();
 			this.updateCurrentPathDisplay();
@@ -707,6 +720,9 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				}
 				event.preventDefault();
 				this.navigateToLocation(parent);
+			} else if (!this.browseOutsideVault && this.currentLocation.inVault) {
+				event.preventDefault();
+				this.noticeBrowseOutsideVaultDisabled();
 			}
 		}
 	};
@@ -733,6 +749,9 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			this.currentLocation = makeLocation(app, locationOrFolder.absPath, locationOptions);
 		} else {
 			this.currentLocation = locationFromFolder(app, locationOrFolder, locationOptions);
+		}
+		if (!this.browseOutsideVault && !this.currentLocation.inVault) {
+			this.currentLocation = this.getVaultRootLocation();
 		}
 		this.setPlaceholder('Search this folder; select a folder to open it');
 	}
@@ -806,6 +825,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 	onChooseSuggestion(entry: VaultEntry, evt?: MouseEvent | KeyboardEvent): void {
 		const targetLoc = this.getCurrentTargetLocation();
+		if (!this.browseOutsideVault && (!targetLoc.inVault || this.isExternalEntry(entry))) {
+			this.noticeBrowseOutsideVaultDisabled();
+			return;
+		}
 
 		const rawQuery = this.inputEl?.value.trim() ?? '';
 		const target = this.getQueryLocation(rawQuery);
@@ -841,6 +864,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 					}
 				}
 				this.navigateToLocation(parent);
+			} else if (!this.browseOutsideVault && targetLoc.inVault) {
+				this.noticeBrowseOutsideVaultDisabled();
 			}
 			return;
 		}
@@ -972,7 +997,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const homeDir = this.resolveHome();
 		this.renderHint(actions, 'Tab', 'Complete');
 		if (homeDir !== null) {
-			this.renderHint(actions, '~', 'Home');
+			this.renderHint(actions, '~', 'Home', !this.browseOutsideVault);
 		}
 		this.renderHint(actions, '^', 'Vault');
 		this.renderHint(actions, ':', 'Reveal', !loc.canReveal, 'fp-hint-reveal');
@@ -1103,6 +1128,11 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
 		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
 
+		if (!this.browseOutsideVault && (!targetLoc.inVault || (entry && this.isExternalEntry(entry)))) {
+			this.noticeBrowseOutsideVaultDisabled();
+			return;
+		}
+
 		if (!entry || entry.isParent) {
 			new Notice(targetLoc.inVault ? 'Select a file to copy its link.' : 'Select a file or folder to copy its link.');
 			return;
@@ -1157,6 +1187,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private openInDestination(file: TFile, destination: 'tab' | 'split' | 'window'): void {
+		if (!this.browseOutsideVault && file instanceof TExternalFile) {
+			this.noticeBrowseOutsideVaultDisabled();
+			return;
+		}
 		if (destination === 'window' && Platform.isMobile) {
 			new Notice('Opening a file in a new window is not available on mobile.');
 			return;
@@ -1175,6 +1209,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private openExternalFile(absPath: string, destination?: 'tab' | 'split' | 'window'): void {
+		if (!this.browseOutsideVault && !makeLocation(this.app, absPath).inVault) {
+			this.noticeBrowseOutsideVaultDisabled();
+			return;
+		}
 		if (destination === 'window' && Platform.isMobile) {
 			new Notice('Opening a file in a new window is not available on mobile.');
 			return;
@@ -1217,6 +1255,11 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const target = this.getQueryLocation(this.inputEl.value);
 		if (!target) {
 			new Notice('The specified folder does not exist.');
+			return;
+		}
+
+		if (!target.location.inVault && !this.browseOutsideVault) {
+			this.noticeBrowseOutsideVaultDisabled();
 			return;
 		}
 
@@ -1270,7 +1313,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		// Outside vault
 		if (!this.allowCreateOutsideVault) {
-			new Notice('Creating files outside the vault is turned off.');
+			new Notice(
+				'Blocked by the “Allow creating files outside vault” setting. Change it in File Palette settings.',
+				8000,
+			);
 			return;
 		}
 
@@ -1310,6 +1356,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (!entry) return;
 
 		const targetLoc = this.getQueryLocation(this.inputEl.value)?.location ?? this.currentLocation;
+		if (!this.browseOutsideVault && (!targetLoc.inVault || this.isExternalEntry(entry))) {
+			this.noticeBrowseOutsideVaultDisabled();
+			return;
+		}
 
 		if (operator === ':') {
 			if (!targetLoc.inVault) {
@@ -1554,6 +1604,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private navigateToLocation(location: PaletteLocation): void {
+		if (!this.browseOutsideVault && !location.inVault) {
+			this.noticeBrowseOutsideVaultDisabled();
+			return;
+		}
 		const win = ownerWindow(this.containerEl ?? this.modalEl ?? this.contentEl ?? this.inputEl) ?? window;
 		this.close();
 		if (VaultPathSuggestModal.cancelPendingNavigation) {
@@ -1706,6 +1760,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const words = queryName.trim().split(/\s+/).filter(Boolean);
 
 		const hasParent = targetLocation.parent() !== null;
+		const parentRequestedAtVaultRoot =
+			!this.browseOutsideVault &&
+			targetLocation.inVault &&
+			queryName.trim() === '..';
 
 		if (!words.length) {
 			const entries: VaultEntry[] = items.map((item) => {
@@ -1870,10 +1928,13 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return pathCollator.compare(leftPath, rightPath);
 		});
 
-		const maxEntries = hasParent ? this.limit - 1 : this.limit;
+		const maxEntries = hasParent || parentRequestedAtVaultRoot ? this.limit - 1 : this.limit;
 		const suggestions: VaultEntry[] = entries.slice(0, maxEntries).map(({ entry }) => entry);
 
-		if (hasParent && words.every((word) => prepareFuzzySearch(word)('..'))) {
+		if (
+			(hasParent || parentRequestedAtVaultRoot) &&
+			words.every((word) => prepareFuzzySearch(word)('..'))
+		) {
 			suggestions.unshift(this.parentEntry);
 		}
 
@@ -1930,6 +1991,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		const lastSeparator = remainingQuery.lastIndexOf('/');
 		if (lastSeparator < 0) {
+			if (!this.browseOutsideVault && !baseLocation.inVault) return null;
 			return { location: baseLocation, name: remainingQuery };
 		}
 
@@ -1949,6 +2011,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		const location = makeLocation(this.app, resolvedAbsPath, locationOptions);
+		if (!this.browseOutsideVault && !location.inVault) return null;
 		if (location.inVault) {
 			const folder = getFolderFromLocation(this.app, location);
 			if (!folder) return null;
@@ -1965,6 +2028,18 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 		}
 		return { location, name };
+	}
+
+	private isExternalEntry(entry: VaultEntry): boolean {
+		if (entry.file instanceof TExternalFile) return true;
+		return Boolean(entry.absPath && !makeLocation(this.app, entry.absPath).inVault);
+	}
+
+	private noticeBrowseOutsideVaultDisabled(): void {
+		new Notice(
+			'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.',
+			8000,
+		);
 	}
 }
 
