@@ -38,7 +38,7 @@ import {
 	type CancelTimer,
 } from 'commons/windows';
 import { applyFilePageColor } from 'commons/color';
-import { collectVaultMetadata, ValuePicker } from 'commons/properties';
+import { collectVaultMetadata, navigatePropertyRows, propertyNamePickerOptions, ValuePicker } from 'commons/properties';
 import { renderKeyHints, type KeyHint } from 'commons/modal';
 
 const FILE_PALETTE_TITLE = 'File palette';
@@ -2187,6 +2187,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 						name: 'Search properties',
 						desc: 'Frontmatter properties to search alongside file names. Only string and string list values are searched. Choose a suggestion or type a new property; new names require confirmation.',
 						render: (setting) => {
+							setting.settingEl.classList.add('commons-property-list-setting');
 							let picker: ValuePicker | null = null;
 							const catalog = collectVaultMetadata(this.app);
 							const supportedKinds = new Set(['string', 'string-list', 'null']);
@@ -2198,8 +2199,10 @@ class FilePaletteSettingTab extends PluginSettingTab {
 								)
 								.map(({ name }) => name);
 							picker = new ValuePicker(this.app, setting.controlEl, {
+								...propertyNamePickerOptions(() => catalog),
+								appearance: 'property',
+								selectedLayout: 'rows',
 								suggestions,
-								kind: 'property',
 								classPrefix: 'file-palette',
 								value: this.plugin.settings.searchProperties,
 								multiple: true,
@@ -2209,7 +2212,11 @@ class FilePaletteSettingTab extends PluginSettingTab {
 									void this.saveSearchProperties(values, (nextValues) => picker?.setValue(nextValues));
 								},
 							});
-							return () => picker?.destroy();
+							const stopNavigation = navigatePropertyRows(setting.controlEl, [picker.rootEl]);
+							return () => {
+								stopNavigation();
+								picker?.destroy();
+							};
 						},
 					},
 					{

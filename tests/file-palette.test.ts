@@ -421,6 +421,13 @@ describe('file palette picker', () => {
 		const setting = new Setting(document.createElement('div'));
 		definition.render(setting, {} as never);
 		expect(setting.controlEl.querySelector('[aria-label="Remove title"]')).not.toBeNull();
+		const titleChip = setting.controlEl.querySelector('.commons-property-picker-chip')!;
+		expect(titleChip.classList.contains('is-plain')).toBe(true);
+		expect(titleChip.querySelector('[aria-label="Text"]')).not.toBeNull();
+		expect(setting.controlEl.querySelector('.commons-property-row')?.getAttribute('tabindex')).toBe('0');
+		expect(setting.settingEl.classList.contains('commons-property-list-setting')).toBe(true);
+		expect(setting.controlEl.querySelector<HTMLElement>('.commons-property-picker')?.dataset.appearance).toBe('property');
+		expect(setting.controlEl.querySelector<HTMLElement>('.commons-property-picker')?.dataset.selectedLayout).toBe('rows');
 		const propertySuggest = AbstractInputSuggest.instances.at(-1);
 		const suggestions = propertySuggest?.suggestions('').map((item: any) => item.value);
 		expect(suggestions).toEqual(expect.arrayContaining(['category', 'tags']));

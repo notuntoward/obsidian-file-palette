@@ -67,7 +67,11 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 
 ### Search
 
-- **Search properties**: Comma-separated frontmatter properties to search alongside file names (defaults to `title`). Offers autocomplete suggestions for properties found in your vault, indicating unsupported properties. Only string and string list values are searched.
+Selected search-property names use compact vertical rows, matching Property
+Porter's filter settings: a muted type icon, plain name, and right-aligned remove
+button. These are property names, not tag-value pills.
+
+- **Search properties**: Choose frontmatter properties to search alongside file names (defaults to `title`). The full-width editor sits below its description so property names and the input can wrap without being squeezed into the settings control column. Uses Property Porter's shared type icons, plain removable property selections, autocomplete, and explicit confirmation for new names. Only string and string list values are searched; selecting a name here does not create it in notes. Click the property row or press Enter to edit, Escape to return to the row when suggestions are closed, and Tab/Shift+Tab to move normally through settings.
 - **Show matching properties**: Toggle displaying configured frontmatter property values underneath each matching file name in the suggestion list (defaults to disabled). When enabled, matched text across all search terms is highlighted.
 
 ### Outside the vault

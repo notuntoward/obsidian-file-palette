@@ -76,6 +76,7 @@ export class Setting {
 
 	constructor(_containerEl: any) {
 		this.containerEl = _containerEl;
+		this.settingEl = _containerEl;
 		this.controlEl = _containerEl;
 		Setting.instances.push(this);
 	}
