@@ -144,6 +144,16 @@
 	min-width: 0;
 }
 
+.fp-hint-line {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-wrap: wrap;
+	gap: var(--size-4-1) var(--size-4-3);
+	min-width: 0;
+	width: 100%;
+}
+
 .fp-hint {
 	display: inline-flex;
 	flex: 0 1 auto;
@@ -155,7 +165,7 @@
 	overflow-wrap: anywhere;
 }
 
-.fp-hint-command {
+.fp-hint-key {
 	flex: 0 1 auto;
 	min-width: 0;
 	color: var(--text-normal);
@@ -230,4 +240,3 @@
 	opacity: 0.35;
 	pointer-events: none;
 }
-

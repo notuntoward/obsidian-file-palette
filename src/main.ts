@@ -39,6 +39,7 @@ import {
 } from 'commons/windows';
 import { applyFilePageColor } from 'commons/color';
 import { collectVaultMetadata, ValuePicker } from 'commons/properties';
+import { renderKeyHints, type KeyHint } from 'commons/modal';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
@@ -995,24 +996,38 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const actions = shortcuts.createDiv({ cls: 'fp-footer-actions' });
 
 		const homeDir = this.resolveHome();
-		this.renderHint(actions, 'Tab', 'Complete');
+		const actionHints: KeyHint[] = [{ key: 'Tab', action: 'Complete' }];
 		if (homeDir !== null) {
-			this.renderHint(actions, '~', 'Home', !this.browseOutsideVault);
+			actionHints.push({ key: '~', action: 'Home', disabled: !this.browseOutsideVault });
 		}
-		this.renderHint(actions, '^', 'Vault');
-		this.renderHint(actions, ':', 'Reveal', !loc.canReveal, 'fp-hint-reveal');
-		this.renderHint(actions, '?', 'Explorer');
-		this.renderHint(actions, '*', 'App');
-		this.renderHint(actions, `${modifier}${shift}L`, 'Link', !loc.canLink, 'fp-hint-link');
+		actionHints.push(
+			{ key: '^', action: 'Vault' },
+			{ key: ':', action: 'Reveal', disabled: !loc.canReveal },
+			{ key: '?', action: 'Explorer' },
+			{ key: '*', action: 'App' },
+			{ key: `${modifier}${shift}L`, action: 'Link', disabled: !loc.canLink },
+		);
+		renderKeyHints(actions, [actionHints], 'fp');
 
 		const openers = shortcuts.createDiv({ cls: 'fp-footer-openers' });
-		this.renderHint(openers, '↵', 'Open');
-		this.renderHint(openers, `${shift}↵`, 'Create', !loc.canCreate, 'fp-hint-create');
-		this.renderHint(openers, `${modifier}${shift}↵`, 'New tab', false, 'fp-hint-tab');
-		this.renderHint(openers, `${modifier}${alternate}↵`, 'Group', false, 'fp-hint-group');
+		const openerHints: KeyHint[] = [
+			{ key: '↵', action: 'Open' },
+			{ key: `${shift}↵`, action: 'Create', disabled: !loc.canCreate },
+			{ key: `${modifier}${shift}↵`, action: 'New tab' },
+			{ key: `${modifier}${alternate}↵`, action: 'Group' },
+		];
 		if (!Platform.isMobile) {
-			this.renderHint(openers, `${modifier}${alternate}${shift}↵`, 'Window', false, 'fp-hint-window');
+			openerHints.push({ key: `${modifier}${alternate}${shift}↵`, action: 'Window' });
 		}
+		renderKeyHints(openers, [openerHints], 'fp');
+		footer.querySelectorAll<HTMLElement>('.fp-hint-key').forEach((key) => {
+			if (key.textContent?.includes('↵')) {
+				key.setAttribute('title', key.textContent.replace('↵', Platform.isMacOS ? 'Return' : 'Enter'));
+			}
+		});
+		footer.querySelectorAll<HTMLElement>('.fp-hint.is-disabled').forEach((hint) => {
+			hint.style.opacity = '0.4';
+		});
 
 		this.updateFooterHints(loc);
 	}
@@ -1029,57 +1044,21 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const canLink = loc.canLink && !!entry && !entry.isParent && (loc.inVault ? isFile : true);
 		const canOpenInLeaf = isFile;
 
-		const linkHint = footer.querySelector<HTMLElement>('.fp-hint-link');
-		if (linkHint) {
-			linkHint.classList.toggle('is-disabled', !canLink);
-			linkHint.style.opacity = canLink ? '' : '0.4';
-		}
-
-		const tabHint = footer.querySelector<HTMLElement>('.fp-hint-tab');
-		if (tabHint) {
-			tabHint.classList.toggle('is-disabled', !canOpenInLeaf);
-			tabHint.style.opacity = canOpenInLeaf ? '' : '0.4';
-		}
-
-		const groupHint = footer.querySelector<HTMLElement>('.fp-hint-group');
-		if (groupHint) {
-			groupHint.classList.toggle('is-disabled', !canOpenInLeaf);
-			groupHint.style.opacity = canOpenInLeaf ? '' : '0.4';
-		}
-
-		const windowHint = footer.querySelector<HTMLElement>('.fp-hint-window');
-		if (windowHint) {
-			windowHint.classList.toggle('is-disabled', !canOpenInLeaf);
-			windowHint.style.opacity = canOpenInLeaf ? '' : '0.4';
-		}
-
-		const createHint = footer.querySelector<HTMLElement>('.fp-hint-create');
-		if (createHint) {
-			createHint.classList.toggle('is-disabled', !loc.canCreate);
-			createHint.style.opacity = loc.canCreate ? '' : '0.4';
-		}
-
-		const revealHint = footer.querySelector<HTMLElement>('.fp-hint-reveal');
-		if (revealHint) {
-			revealHint.classList.toggle('is-disabled', !loc.canReveal);
-			revealHint.style.opacity = loc.canReveal ? '' : '0.4';
-		}
-	}
-
-	private renderHint(container: HTMLElement, command: string, purpose: string, disabled = false, cls?: string): void {
-		const classes = ['fp-hint'];
-		if (disabled) classes.push('is-disabled');
-		if (cls) classes.push(cls);
-		const hint = container.createDiv({ cls: classes.join(' ') });
-		if (disabled) {
-			hint.style.opacity = '0.4';
-		}
-		const key = hint.createSpan({ cls: 'fp-hint-command' });
-		key.setText(command);
-		if (command.includes('↵')) {
-			key.setAttribute('title', command.replace('↵', Platform.isMacOS ? 'Return' : 'Enter'));
-		}
-		hint.createSpan({ cls: 'fp-hint-purpose' }).setText(purpose);
+		const disabledByAction = new Map([
+			['Link', !canLink],
+			['New tab', !canOpenInLeaf],
+			['Group', !canOpenInLeaf],
+			['Window', !canOpenInLeaf],
+			['Create', !loc.canCreate],
+			['Reveal', !loc.canReveal],
+		]);
+		footer.querySelectorAll<HTMLElement>('.fp-hint').forEach((hint) => {
+			const action = hint.querySelector('.fp-hint-action')?.textContent;
+			if (!action || !disabledByAction.has(action)) return;
+			const disabled = disabledByAction.get(action) ?? false;
+			hint.classList.toggle('is-disabled', disabled);
+			hint.style.opacity = disabled ? '0.4' : '';
+		});
 	}
 
 	private completeSelectedSuggestion(): void {

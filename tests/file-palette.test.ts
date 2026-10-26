@@ -265,8 +265,8 @@ describe('file palette picker', () => {
 		expect(header?.nextElementSibling).toBe(modal?.inputEl.parentElement);
 		expect(modal?.modalEl.classList.contains('file-palette-modal')).toBe(true);
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-actions .fp-hint') ?? [], (hint) => [
-			hint.querySelector('.fp-hint-command')?.textContent,
-			hint.querySelector('.fp-hint-purpose')?.textContent,
+			hint.querySelector('.fp-hint-key')?.textContent,
+			hint.querySelector('.fp-hint-action')?.textContent,
 		])).toEqual([
 			['Tab', 'Complete'],
 			['~', 'Home'],
@@ -277,8 +277,8 @@ describe('file palette picker', () => {
 			['Ctrl+Shift+L', 'Link'],
 		]);
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
-			hint.querySelector('.fp-hint-command')?.textContent,
-			hint.querySelector('.fp-hint-purpose')?.textContent,
+			hint.querySelector('.fp-hint-key')?.textContent,
+			hint.querySelector('.fp-hint-action')?.textContent,
 		])).toEqual([
 			['↵', 'Open'],
 			['Shift+↵', 'Create'],
@@ -294,15 +294,17 @@ describe('file palette picker', () => {
 		const modal = SuggestModal.instances.at(-1);
 
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-actions .fp-hint') ?? [], (hint) => [
-			hint.querySelector('.fp-hint-command')?.textContent,
-			hint.querySelector('.fp-hint-purpose')?.textContent,
+			hint.querySelector('.fp-hint-key')?.textContent,
+			hint.querySelector('.fp-hint-action')?.textContent,
 		])).toContainEqual(['⌘⇧L', 'Link']);
 		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
-			hint.querySelector('.fp-hint-command')?.textContent,
-			hint.querySelector('.fp-hint-purpose')?.textContent,
+			hint.querySelector('.fp-hint-key')?.textContent,
+			hint.querySelector('.fp-hint-action')?.textContent,
 		])).toEqual([['↵', 'Open'], ['⇧↵', 'Create'], ['⌘⇧↵', 'New tab'], ['⌘⌥↵', 'Group'], ['⌘⌥⇧↵', 'Window']]);
-		expect(modal?.modalEl.querySelector('.fp-footer-openers .fp-hint-command[title]')?.getAttribute('title'))
+		expect(modal?.modalEl.querySelector('.fp-footer-openers .fp-hint-key[title]')?.getAttribute('title'))
 			.toBe('Return');
+		expect(modal?.modalEl.querySelectorAll('.fp-footer-actions .fp-hint-line')).toHaveLength(1);
+		expect(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint-line')).toHaveLength(1);
 	});
 
 	it('organizes settings into unheaded general, Search, and Outside the vault groups with safe defaults', () => {
@@ -1784,7 +1786,7 @@ describe('external file and folder palette behavior', () => {
 		);
 		expect(Notice.durations.at(-1)).toBe(8000);
 		expect(
-			Array.from(modal.modalEl.querySelectorAll('.fp-hint.is-disabled .fp-hint-command')).map((el) => el.textContent),
+			Array.from(modal.modalEl.querySelectorAll('.fp-hint.is-disabled .fp-hint-key')).map((el) => el.textContent),
 		).toContain('~');
 
 		expect(await Promise.resolve(modal.getSuggestions('../'))).toEqual([]);
@@ -1891,7 +1893,7 @@ describe('external file and folder palette behavior', () => {
 		if (!modal) throw new Error('Expected modal to open');
 
 		const disabledHints = Array.from(modal.modalEl.querySelectorAll('.fp-hint.is-disabled'));
-		const commands = disabledHints.map((el) => el.querySelector('.fp-hint-command')?.textContent);
+		const commands = disabledHints.map((el) => el.querySelector('.fp-hint-key')?.textContent);
 		expect(commands).toContain(':');
 		expect(commands.some((c) => c?.includes('↵'))).toBe(true);
 		expect(commands.some((c) => c?.includes('L'))).toBe(true);
