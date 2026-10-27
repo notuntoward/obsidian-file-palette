@@ -502,6 +502,7 @@ interface RawProperty {
 export interface VaultEntry {
 	file: TAbstractFile | null;
 	isParent: boolean;
+	nameMatches?: [number, number][];
 	propertyValues?: PropertyMatch[];
 	name?: string;
 	isFolder?: boolean;
@@ -792,13 +793,17 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const extension = entry.extension ?? (entry.file instanceof TFile ? entry.file.extension : '');
 
 		if (isFolder) {
-			element.createSpan({ cls: 'file-palette-suggestion-name' }).setText(`${name}/`);
+			renderMatches(
+				element.createSpan({ cls: 'file-palette-suggestion-name' }),
+				`${name}/`,
+				entry.nameMatches ?? null,
+			);
 			return;
 		}
 
 		const details = element.createDiv({ cls: 'file-palette-suggestion-details' });
 		const nameEl = details.createDiv({ cls: 'file-palette-suggestion-name' });
-		nameEl.setText(basename);
+		renderMatches(nameEl, basename, entry.nameMatches ?? null);
 
 		if (entry.file instanceof TFile) {
 			applyFilePageColor(this.app, nameEl, entry.file);
@@ -1787,6 +1792,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		const entries = items.flatMap((item) => {
 			const { fields, displayProperties } = this.getItemSearchData(item);
+			const nameMatches: [number, number][] = [];
 
 			const propertyHitsByProperty = new Map<string, { matches: [number, number][]; scores: number[] }>();
 			if (this.showPropertyMatches) {
@@ -1840,6 +1846,9 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 						if (!bestMatchForWord || compareWordMatches(fieldMatch, bestMatchForWord) > 0) {
 							bestMatchForWord = fieldMatch;
 						}
+						if (field.isFilename) {
+							nameMatches.push(...fieldRanges);
+						}
 						if (!field.isFilename && field.property && this.showPropertyMatches) {
 							const propHit = propertyHitsByProperty.get(field.property);
 							if (propHit) {
@@ -1884,6 +1893,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				entry: {
 					file: item.file,
 					isParent: false,
+					nameMatches: mergeRanges(nameMatches),
 					propertyValues,
 					name: item.name,
 					isFolder: item.isFolder,

@@ -72,6 +72,7 @@ Porter's filter settings: a muted type icon, plain name, and right-aligned remov
 button. These are property names, not tag-value pills.
 
 - **Search properties**: Choose frontmatter properties to search alongside file names (defaults to `title`). The full-width editor sits below its description so property names and the input can wrap without being squeezed into the settings control column. Uses Property Porter's shared type icons, plain removable property selections, autocomplete, and explicit confirmation for new names. Only string and string list values are searched; selecting a name here does not create it in notes. Click the property row or press Enter to edit, Escape to return to the row when suggestions are closed, and Tab/Shift+Tab to move normally through settings.
+- File and folder names highlight matched text across all search terms, including fuzzy matches, independently of whether property details are shown.
 - **Show matching properties**: Toggle displaying configured frontmatter property values underneath each matching file name in the suggestion list (defaults to disabled). When enabled, matched text across all search terms is highlighted.
 
 ### Outside the vault

@@ -448,6 +448,71 @@ describe('file palette picker', () => {
 		expect(modal?.getSuggestions('distinctive').some(({ file }) => file === categoryMatch)).toBe(true);
 	});
 
+	it.each([
+		{ name: 'ActionLab26beePolarisSkyNav.md', query: 'lab', highlights: ['Lab'], showProperties: false },
+		{ name: 'ActionLab26beePolarisSkyNav.md', query: 'lab', highlights: ['Lab'], showProperties: true },
+		{ name: 'Lab report.txt', query: 'lab', highlights: ['Lab'], showProperties: false },
+		{ name: 'Lab report.md', query: 'report lab', highlights: ['Lab', 'report'], showProperties: false },
+		{ name: 'Laboratory.md', query: 'lab labo', highlights: ['Labo'], showProperties: false },
+		{ name: 'Lab report.md', query: 'lab', highlights: ['Lab'], showProperties: true, title: 'lab' },
+		{ name: 'Lab report.md', query: 'lab unique', highlights: ['Lab'], showProperties: true, title: 'unique' },
+		{ name: 'Unrelated.md', query: 'lab', highlights: [], showProperties: true, title: 'lab' },
+		{ name: 'Lab report.md', query: '', highlights: [], showProperties: true },
+		{ name: 'Lab report.md', query: '^/current/lab', highlights: ['Lab'], showProperties: false },
+	])('highlights filename matches for $name with "$query" (properties: $showProperties)', async ({
+		name, query, highlights, showProperties, title,
+	}) => {
+		const file = addFile(currentFolder, name);
+		if (title) metadataByFile.set(file, { frontmatter: { title } });
+		await plugin.settingTabs[0].setControlValue('showPropertyMatches', showProperties);
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		const entry = modal?.getSuggestions(query).find(({ file: result }) => result === file);
+		if (!modal || !entry) throw new Error('Expected the filename-matching suggestion');
+		const element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+
+		const nameEl = element.querySelector('.file-palette-suggestion-name');
+		expect(nameEl?.textContent).toBe(file.basename);
+		expect(Array.from(nameEl!.querySelectorAll('.suggestion-highlight'), (el) => el.textContent))
+			.toEqual(highlights);
+		expect(element.getAttribute('data-path')).toBe(file.path);
+		expect(element.querySelector('.file-palette-suggestion-extension')?.textContent ?? '')
+			.toBe(file.extension === 'md' ? '' : file.extension.toUpperCase());
+		if (showProperties && title) {
+			expect(element.querySelector('.file-palette-suggestion-property-value .suggestion-highlight')?.textContent)
+				.toBe(title);
+		}
+	});
+
+	it('highlights fuzzy filename ranges instead of requiring a literal substring', () => {
+		const file = addFile(currentFolder, 'LongAmberBranch.md');
+		vi.spyOn(ObsidianMock, 'prepareFuzzySearch').mockReturnValue((value) =>
+			value === file.basename ? { score: 8, matches: [[0, 1], [4, 5], [9, 10]] } : null,
+		);
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		const entry = modal?.getSuggestions('lab').find(({ file: result }) => result === file);
+		if (!modal || !entry) throw new Error('Expected a fuzzy filename match');
+		const element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+		expect(element.querySelector('.file-palette-suggestion-name')?.textContent).toBe(file.basename);
+		expect(Array.from(element.querySelectorAll('.suggestion-highlight'), (el) => el.textContent))
+			.toEqual(['L', 'A', 'B']);
+	});
+
+	it('highlights folder names without changing the trailing slash', () => {
+		const folder = addFolder(currentFolder, 'Lab notes');
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		const entry = modal?.getSuggestions('lab').find(({ file }) => file === folder);
+		if (!modal || !entry) throw new Error('Expected a folder match');
+		const element = document.createElement('div');
+		modal.renderSuggestion(entry, element);
+		expect(element.querySelector('.file-palette-suggestion-name')?.textContent).toBe('Lab notes/');
+		expect(element.querySelector('.suggestion-highlight')?.textContent).toBe('Lab');
+	});
+
 	it('shows matching property values beneath filenames with fuzzy-match highlighting', async () => {
 		const matchingFile = addFile(currentFolder, 'Unrelated.md');
 		metadataByFile.set(matchingFile, { frontmatter: { title: 'A unique title' } });
@@ -588,8 +653,9 @@ describe('file palette picker', () => {
 		const element = document.createElement('div');
 		modal.renderSuggestion(entry, element);
 
-		const highlights = Array.from(element.querySelectorAll('.suggestion-highlight'), (el) => el.textContent);
+		const highlights = Array.from(element.querySelectorAll('.file-palette-suggestion-properties .suggestion-highlight'), (el) => el.textContent);
 		expect(highlights).toEqual(['steady', 'fake']);
+		expect(element.querySelector('.file-palette-suggestion-name .suggestion-highlight')?.textContent).toBe('Steady');
 	});
 
 	it('uses the vault root for caret queries and updates the displayed path', () => {
