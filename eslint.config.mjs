@@ -49,7 +49,10 @@ export default [
       'obsidianmd/prefer-window-timers': 'error',
       'obsidianmd/regex-lookbehind': 'error',
       'obsidianmd/validate-license': 'error',
-      'obsidianmd/validate-manifest': 'error'
+      'obsidianmd/validate-manifest': 'error',
+      'obsidianmd/settings-tab/no-deprecated-display': 'error',
+      'obsidianmd/settings-tab/prefer-setting-definitions': 'error',
+      'obsidianmd/settings-tab/prefer-update-over-display': 'error'
     }
   }
 ];
