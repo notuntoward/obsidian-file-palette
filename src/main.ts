@@ -1,6 +1,7 @@
 import {
 	App,
 	FileSystemAdapter,
+	Modal,
 	normalizePath,
 	Notice,
 	Platform,
@@ -205,6 +206,17 @@ function getFolderFromLocation(app: App, loc: { inVault: boolean; vaultRelPath: 
 	const rel = loc.vaultRelPath.replace(/^\/+/, '');
 	const file = app.vault.getAbstractFileByPath(rel);
 	return file instanceof TFolder ? file : null;
+}
+
+const BROWSE_OUTSIDE_BLOCKED_MESSAGE = 'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.';
+const ALLOW_CREATE_OUTSIDE_BLOCKED_MESSAGE =
+	'Blocked by the “Allow creating files outside vault” setting. Change it in File Palette settings.';
+
+function validateItemName(name: string): string | null {
+	if (name === '') return 'Enter a name.';
+	if (name === '.' || name === '..') return 'That name is reserved.';
+	if (/[\\/:*?"<>|]/.test(name)) return 'Names cannot contain \\ / : * ? " < > |';
+	return null;
 }
 
 function makeItemAbsPath(loc: { absPath: string }, name: string): string {
@@ -641,6 +653,12 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
+		if (event.key === 'F2' && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+			event.preventDefault();
+			this.beginRenameSelected();
+			return;
+		}
+
 		if (event.key === ':' || event.key === '?' || event.key === '*') {
 			if (event.key === ':' && Platform.isWin && /^[a-zA-Z]$/.test(this.inputEl.value)) return;
 			event.preventDefault();
@@ -978,6 +996,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			{ key: '?', action: 'Explorer' },
 			{ key: '*', action: 'App' },
 			{ key: `${modifier}${shift}L`, action: 'Link', disabled: !loc.canLink },
+			{ key: 'F2', action: 'Rename' },
 		);
 		renderKeyHints(actions, [actionHints], 'fp');
 
@@ -1015,9 +1034,11 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 		const canLink = loc.canLink && !!entry && !entry.isParent && (loc.inVault ? isFile : true);
 		const canOpenInLeaf = isFile;
+		const canRename = !!entry && this.getRenameBlockReason(entry) === null;
 
 		const disabledByAction = new Map([
 			['Link', !canLink],
+			['Rename', !canRename],
 			['New tab', !canOpenInLeaf],
 			['Group', !canOpenInLeaf],
 			['Window', !canOpenInLeaf],
@@ -1299,6 +1320,83 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		} catch (error) {
 			const reason = error instanceof Error ? error.message : String(error);
 			new Notice(`Could not create file: ${reason}`);
+		}
+	}
+
+	private getRenameBlockReason(entry: VaultEntry): string | null {
+		if (entry.isParent) return 'Select a file or folder to rename.';
+		if (this.isExternalEntry(entry)) {
+			if (!this.browseOutsideVault) return BROWSE_OUTSIDE_BLOCKED_MESSAGE;
+			if (!this.allowCreateOutsideVault) return ALLOW_CREATE_OUTSIDE_BLOCKED_MESSAGE;
+			if (!entry.absPath) return 'This item cannot be renamed.';
+		}
+		return null;
+	}
+
+	private beginRenameSelected(): void {
+		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		if (!entry) return;
+
+		const reason = this.getRenameBlockReason(entry);
+		if (reason) {
+			new Notice(reason, 8000);
+			return;
+		}
+
+		const currentName = entry.file?.name ?? entry.name ?? '';
+		if (currentName === '') return;
+		const isFolder = Boolean(entry.isFolder || entry.file instanceof TFolder);
+		new ItemRenameModal(this.app, currentName, !isFolder, (newName) => {
+			if (newName === currentName) return;
+			void this.renameEntry(entry, newName);
+		}).open();
+	}
+
+	private async renameEntry(entry: VaultEntry, newName: string): Promise<void> {
+		const renamed = this.isExternalEntry(entry)
+			? this.renameExternalEntry(entry.absPath ?? '', newName)
+			: entry.file !== null && (await this.renameVaultEntry(entry.file, newName));
+		if (renamed) this.close();
+	}
+
+	private async renameVaultEntry(file: TAbstractFile, newName: string): Promise<boolean> {
+		const dir = file.path.slice(0, file.path.length - file.name.length);
+		const newPath = normalizePath(`${dir}${newName}`);
+		const existing = this.app.vault.getAbstractFileByPath(newPath);
+		if (existing && existing !== file) {
+			new Notice(`“${newName}” already exists here.`);
+			return false;
+		}
+		try {
+			await this.app.fileManager.renameFile(file, newPath);
+			return true;
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not rename item: ${reason}`);
+			return false;
+		}
+	}
+
+	private renameExternalEntry(absPath: string, newName: string): boolean {
+		const fsModule = getFs();
+		if (!fsModule) {
+			new Notice('Renaming items outside the vault is not available on this device.');
+			return false;
+		}
+		const oldPath = norm(absPath);
+		const newPath = `${oldPath.slice(0, oldPath.lastIndexOf('/') + 1)}${newName}`;
+		if (fsModule.existsSync(newPath) && newPath.toLowerCase() !== oldPath.toLowerCase()) {
+			new Notice(`“${newName}” already exists here.`);
+			return false;
+		}
+		try {
+			fsModule.renameSync(oldPath, newPath);
+			return true;
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not rename item: ${reason}`);
+			return false;
 		}
 	}
 
@@ -1991,10 +2089,41 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private noticeBrowseOutsideVaultDisabled(): void {
-		new Notice(
-			'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.',
-			8000,
-		);
+		new Notice(BROWSE_OUTSIDE_BLOCKED_MESSAGE, 8000);
+	}
+}
+
+class ItemRenameModal extends Modal {
+	constructor(
+		app: App,
+		private readonly currentName: string,
+		private readonly selectStemOnly: boolean,
+		private readonly onSubmit: (newName: string) => void,
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.contentEl.createDiv({ cls: 'fp-rename-label', text: 'Rename' });
+		const input = this.contentEl.createEl('input', { type: 'text', cls: 'fp-rename-input' });
+		input.value = this.currentName;
+		const errorEl = this.contentEl.createDiv({ cls: 'fp-rename-error' });
+		const dotIndex = this.currentName.lastIndexOf('.');
+		const selectEnd = this.selectStemOnly && dotIndex > 0 ? dotIndex : this.currentName.length;
+		input.addEventListener('keydown', (event: KeyboardEvent) => {
+			if (event.key !== 'Enter' || event.isComposing) return;
+			event.preventDefault();
+			const name = input.value.trim();
+			const error = validateItemName(name);
+			if (error) {
+				errorEl.textContent = error;
+				return;
+			}
+			this.close();
+			this.onSubmit(name);
+		});
+		input.focus();
+		input.setSelectionRange(0, selectEnd);
 	}
 }
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -275,9 +275,9 @@ describe('file palette picker', () => {
 			['?', 'Explorer'],
 			['*', 'App'],
 			['Ctrl+Shift+L', 'Link'],
+			['F2', 'Rename'],
 		]);
-		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [
-			hint.querySelector('.fp-hint-key')?.textContent,
+		expect(Array.from(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint') ?? [], (hint) => [			hint.querySelector('.fp-hint-key')?.textContent,
 			hint.querySelector('.fp-hint-action')?.textContent,
 		])).toEqual([
 			['↵', 'Open'],
@@ -2583,3 +2583,269 @@ describe('generateExternalMarkdownLink formatting', () => {
 		expect(generateExternalMarkdownLink('//server/share/docs/report.pdf')).toBe('[report.pdf](file://server/share/docs/report.pdf)');
 	});
 });
+
+describe('F2 rename in the palette', () => {
+	let tempDir: string;
+	let app: App;
+	let plugin: FilePalettePlugin & {
+		commands: { id: string; callback: () => void }[];
+	};
+	let root: TFolder;
+	let renamed: [unknown, string][];
+
+	const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+	const openPalette = (): VaultPathSuggestModal => {
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1) as VaultPathSuggestModal | undefined;
+		if (!modal) throw new Error('Expected modal to open');
+		return modal;
+	};
+
+	const selectEntry = (modal: VaultPathSuggestModal, entry: unknown): void => {
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry as never, element);
+		modal.resultContainerEl.appendChild(element);
+	};
+
+	const findVaultEntry = async (modal: VaultPathSuggestModal, name: string) => {
+		const entries = await Promise.resolve(modal.getSuggestions(''));
+		const entry = entries.find((candidate) => candidate.file?.name === name);
+		if (!entry) throw new Error(`Expected entry ${name}`);
+		return entry;
+	};
+
+	const pressF2 = (modal: VaultPathSuggestModal): void => {
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true, cancelable: true }));
+	};
+
+	const renameModal = (): HTMLElement => {
+		const modal = Modal.instances.at(-1);
+		const input = modal?.contentEl.querySelector('.fp-rename-input');
+		if (!modal || !input) throw new Error('Expected rename modal');
+		return modal.contentEl as HTMLElement;
+	};
+
+	const submitRename = (value: string): void => {
+		const input = renameModal().querySelector<HTMLInputElement>('.fp-rename-input');
+		if (!input) throw new Error('Expected rename input');
+		input.value = value;
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+	};
+
+	beforeEach(async () => {
+		vi.restoreAllMocks();
+		SuggestModal.instances.length = 0;
+		Modal.instances.length = 0;
+		Notice.messages.length = 0;
+		Notice.durations.length = 0;
+		renamed = [];
+		Platform.isDesktopApp = true;
+		Platform.isWin = true;
+		Platform.isMobile = false;
+
+		tempDir = mkdtempSync(join(tmpdir(), 'palette-rename-'));
+		writeFileSync(join(tempDir, 'readme.txt'), 'hello\n');
+		mkdirSync(join(tempDir, 'sub'));
+
+		root = new TFolder('', '');
+		addFile(root, 'note.md');
+		addFolder(root, 'Projects');
+		const taken = new TFile('taken.md', 'taken.md');
+
+		app = {
+			vault: {
+				adapter: new FileSystemAdapter('C:/ObsidianVault'),
+				getRoot: () => root,
+				getAbstractFileByPath: (path: string) => {
+					if (path === 'taken.md') return taken;
+					return root.children.find((child) => child.path === path) ?? null;
+				},
+				getFileByPath: () => null,
+				create: vi.fn(),
+			},
+			workspace: {
+				getActiveFile: () => null,
+				getLeaf: () => ({ openFile: vi.fn(() => Promise.resolve()) }),
+				getLeavesOfType: () => [],
+			},
+			metadataCache: {
+				getFileCache: () => null,
+			},
+			fileManager: {
+				generateMarkdownLink: vi.fn(),
+				renameFile: vi.fn((file: unknown, path: string) => {
+					renamed.push([file, path]);
+					return Promise.resolve();
+				}),
+			},
+		} as unknown as App;
+
+		plugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
+		await plugin.onload();
+	});
+
+	afterEach(() => {
+		VaultPathSuggestModal.closeActiveModal();
+		try {
+			rmSync(tempDir, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it('renames a vault file with fileManager and keeps the extension unselected', async () => {
+		const modal = openPalette();
+		selectEntry(modal, await findVaultEntry(modal, 'note.md'));
+		pressF2(modal);
+
+		const input = renameModal().querySelector<HTMLInputElement>('.fp-rename-input');
+		expect(input?.value).toBe('note.md');
+		expect(input?.selectionStart).toBe(0);
+		expect(input?.selectionEnd).toBe(4);
+
+		submitRename('renamed.md');
+		await flush();
+		expect(renamed).toEqual([[root.children.find((child) => child.name === 'note.md'), 'renamed.md']]);
+	});
+
+	it('renames a vault folder with fileManager', async () => {
+		const modal = openPalette();
+		const folder = root.children.find((child) => child.name === 'Projects');
+		const entry = {
+			file: folder,
+			isParent: false,
+			name: 'Projects',
+			isFolder: true,
+			absPath: 'C:/ObsidianVault/Projects',
+		};
+		selectEntry(modal, entry);
+		pressF2(modal);
+
+		const input = renameModal().querySelector<HTMLInputElement>('.fp-rename-input');
+		expect(input?.selectionEnd).toBe('Projects'.length);
+
+		submitRename('Archive');
+		await flush();
+		expect(renamed).toEqual([[folder, 'Archive']]);
+	});
+
+	it('shows a validation error and keeps the modal open for invalid names', async () => {
+		const modal = openPalette();
+		selectEntry(modal, await findVaultEntry(modal, 'note.md'));
+		pressF2(modal);
+
+		submitRename('bad/name');
+		await flush();
+		expect(renamed).toEqual([]);
+		expect(renameModal().querySelector('.fp-rename-error')?.textContent).toContain('Names cannot contain');
+	});
+
+	it('blocks renaming onto an existing vault path', async () => {
+		const modal = openPalette();
+		selectEntry(modal, await findVaultEntry(modal, 'note.md'));
+		pressF2(modal);
+
+		submitRename('taken.md');
+		await flush();
+		expect(renamed).toEqual([]);
+		expect(Notice.messages.at(-1)).toBe('“taken.md” already exists here.');
+	});
+
+	it('does nothing when the name is unchanged', async () => {
+		const modal = openPalette();
+		selectEntry(modal, await findVaultEntry(modal, 'note.md'));
+		pressF2(modal);
+
+		submitRename('note.md');
+		await flush();
+		expect(renamed).toEqual([]);
+	});
+
+	it('does not open a rename dialog for the parent entry', async () => {
+		const modal = openPalette();
+		const parent = { file: null, isParent: true };
+		selectEntry(modal, parent);
+		const before = Modal.instances.length;
+		pressF2(modal);
+
+		expect(Modal.instances.length).toBe(before);
+		expect(Notice.messages.at(-1)).toBe('Select a file or folder to rename.');
+	});
+
+	describe('outside the vault', () => {
+		const externalFileEntry = () => {
+			const real = join(tempDir, 'readme.txt');
+			return {
+				file: new TExternalFile('readme.txt', 'readme.txt', real),
+				isParent: false,
+				name: 'readme.txt',
+				isFolder: false,
+				absPath: norm(real),
+			};
+		};
+
+		it('renames an external file on disk when both outside-vault settings allow it', async () => {
+			plugin.settings.browseOutsideVault = true;
+			plugin.settings.allowCreateOutsideVault = true;
+			const modal = openPalette();
+			selectEntry(modal, externalFileEntry());
+			pressF2(modal);
+
+			submitRename('notes.txt');
+			await flush();
+			expect(existsSync(join(tempDir, 'readme.txt'))).toBe(false);
+			expect(readFileSync(join(tempDir, 'notes.txt'), 'utf8')).toBe('hello\n');
+			expect(renamed).toEqual([]);
+		});
+
+		it('renames an external folder on disk', async () => {
+			plugin.settings.browseOutsideVault = true;
+			plugin.settings.allowCreateOutsideVault = true;
+			const modal = openPalette();
+			selectEntry(modal, {
+				file: null,
+				isParent: false,
+				name: 'sub',
+				isFolder: true,
+				absPath: norm(join(tempDir, 'sub')),
+			});
+			pressF2(modal);
+
+			submitRename('moved');
+			await flush();
+			expect(existsSync(join(tempDir, 'sub'))).toBe(false);
+			expect(existsSync(join(tempDir, 'moved'))).toBe(true);
+		});
+
+		it('blocks external renames when Allow creating files outside vault is off', async () => {
+			plugin.settings.browseOutsideVault = true;
+			plugin.settings.allowCreateOutsideVault = false;
+			const modal = openPalette();
+			selectEntry(modal, externalFileEntry());
+			const before = Modal.instances.length;
+			pressF2(modal);
+
+			expect(Modal.instances.length).toBe(before);
+			expect(Notice.messages.at(-1)).toBe(
+				'Blocked by the “Allow creating files outside vault” setting. Change it in File Palette settings.',
+			);
+			expect(existsSync(join(tempDir, 'readme.txt'))).toBe(true);
+		});
+
+		it('blocks external renames when Browse outside vault is off', async () => {
+			plugin.settings.browseOutsideVault = false;
+			plugin.settings.allowCreateOutsideVault = true;
+			const modal = openPalette();
+			selectEntry(modal, externalFileEntry());
+			const before = Modal.instances.length;
+			pressF2(modal);
+
+			expect(Modal.instances.length).toBe(before);
+			expect(Notice.messages.at(-1)).toBe(
+				'Blocked by the “Browse outside vault” setting. Change it in File Palette settings.',
+			);
+		});
+	});
+});
+

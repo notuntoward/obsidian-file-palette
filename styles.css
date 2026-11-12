@@ -240,3 +240,18 @@
 	opacity: 0.35;
 	pointer-events: none;
 }
+
+.fp-rename-label {
+	font-weight: var(--font-semibold);
+	margin-bottom: 0.5em;
+}
+
+.fp-rename-input {
+	width: 100%;
+}
+
+.fp-rename-error {
+	color: var(--text-error);
+	min-height: 1.2em;
+	margin-top: 0.4em;
+}
