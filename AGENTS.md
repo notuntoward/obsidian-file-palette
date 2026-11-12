@@ -34,8 +34,8 @@ tests; the rules below are the plugin-specific ones that remain.
 ## File palette regression tests
 
 - Run `npm run test:run` after changing picker behavior or styling.
-- Keep coverage for the persistent path above the search input, the `~` vault
-  root operator, relative slash-separated paths, and compact suggestion rows.
+- Keep coverage for the persistent path above the search input, the `^` vault-root and
+  `~` home path prefixes, relative slash-separated paths, and compact suggestion rows.
 - Update the related assertions when intentionally changing those interactions.
 
 ## Repository setup for new plugins seeded from this template

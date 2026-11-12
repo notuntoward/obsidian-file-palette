@@ -31,9 +31,11 @@ A fast file and folder picker for jumping to files and browsing folders.
 | `?` | Show the highlighted file or folder (including `..`) in your system file explorer (Finder or Windows Explorer) |
 | `*` | Open the highlighted file or folder with your system default app |
 | Ctrl+Shift+L (Windows/Linux); Cmd+Shift+L (macOS) | Copy a link to the highlighted file or folder |
-| `^` | Return immediately to the vault root |
-| `~` | Go to the user's OS home directory (desktop only; requires Browse outside vault) |
-| `/` | Go to the vault root (inside vault) or OS filesystem root (outside vault; requires Browse outside vault) |
+| `^` or `^/` | Start the search at the vault root |
+| `~` or `~/` | Start the search at your OS home directory (desktop only; requires Browse outside vault) |
+| `/` | Start the search at the vault root when inside the vault, or at the OS filesystem root when outside it (requires Browse outside vault) |
+
+Path prefixes take effect as you type, so the path above the search box previews where the query points. Typing `~` or `^` by itself completes it to `~/` or `^/`, and any slashes typed immediately after are ignored. The palette only moves to that folder when you press Enter with no partial name, pick a folder, or choose a path segment. Deleting a prefix leaves you where you are.
 
 
 ## External Files & Folders
@@ -42,7 +44,7 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 
 - **Location tracks reality**: The palette opens in the active file's real OS folder and shows the OS path (e.g. `C:/Users/scott/repos/docs`).
 - **Indicator marks the exception**: Inside the vault, paths stay vault-relative (`/Finance/`) with a `vault` icon. Outside the vault, a `home` icon appears when browsing at or under your home directory, and a `hard-drive` indicator appears elsewhere. Disabled footer shortcuts are dimmed.
-- **Quick return**: Typing `^` at any point returns straight to the vault root. When outside-vault browsing is enabled, typing `~` jumps to your OS home directory.
+- **Quick return**: Start a search with `^` to point at the vault root. When outside-vault browsing is enabled, start it with `~` to point at your OS home directory. `/` points at the vault root inside the vault and at the OS filesystem root outside it, which the path indicator makes clear.
 - **Navigation**: Selecting `..` or pressing Backspace in an empty search navigates up the folder hierarchy. With outside-vault browsing disabled, navigation stops at the vault root.
 
 ### Outside-the-Vault Capabilities
@@ -56,9 +58,9 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 | `?` (explorer) | Shows in system file explorer | Shows in system file explorer |
 | `*` (app) | Opens in system default app | Opens in system default app |
 | Tab, Backspace, `..` | Navigate and complete | Navigate and complete |
-| `^` | Jumps to vault root | Jumps to vault root |
-| `~` | Jumps to OS home directory | Jumps to OS home directory |
-| `/` | Jumps to vault root | Jumps to OS filesystem root |
+| `^` | Points at vault root | Points at vault root |
+| `~` | Points at OS home directory | Points at OS home directory |
+| `/` | Points at vault root | Points at OS filesystem root |
 
 
 ## Settings

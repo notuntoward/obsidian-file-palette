@@ -658,16 +658,18 @@ describe('file palette picker', () => {
 		expect(element.querySelector('.file-palette-suggestion-name .suggestion-highlight')?.textContent).toBe('Steady');
 	});
 
-	it('uses the vault root for caret queries and updates the displayed path', () => {
+	it('previews the vault root for caret queries without clearing the input', () => {
 		runCommand('open-palette');
-		const modal = SuggestModal.instances.at(-1);
+		const modal = SuggestModal.instances.at(-1) as VaultPathSuggestModal | undefined;
 		if (!modal) throw new Error('Expected the picker modal to open');
+		const locationBeforeTyping = modal.currentLocation.absPath;
 
 		modal.inputEl.value = '^';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
 		expect(modal.modalEl.querySelector('.file-palette-current-path')?.textContent).toBe('/');
-		expect(modal.inputEl.value).toBe('');
+		expect(modal.inputEl.value).toBe('^/');
+		expect(modal.currentLocation.absPath).toBe(locationBeforeTyping);
 		expect((modal.getSuggestions('^') as any).some((entry: any) => entry.file === rootFile)).toBe(true);
 	});
 
@@ -2291,7 +2293,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		expect(home1).toBe(home2);
 	});
 
-	it('~ alone in query navigates to user home directory and sets home icon', () => {
+	it('~ alone completes to ~/ and previews the user home directory', () => {
 		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
 		modal.open();
 
@@ -2299,21 +2301,104 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
 		const home = resolveHome();
-		expect(modal.currentLocation.absPath).toBe(home);
+		expect(modal.inputEl.value).toBe('~/');
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe(home);
 		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
 		expect(indicator?.getAttribute('data-icon')).toBe('home');
-		expect(modal.inputEl.value).toBe('');
 	});
 
-	it('~/ navigates relative to home directory', () => {
+	it('~/ previews the home directory and keeps the typed query', () => {
 		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
 		modal.open();
 
 		modal.inputEl.value = '~/';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
+		expect(modal.inputEl.value).toBe('~/');
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe(resolveHome());
+	});
+
+	it('typing ~ then / keeps one slash and previews home instead of jumping to the OS root', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
+		modal.open();
 		const home = resolveHome();
-		expect(modal.currentLocation.absPath).toBe(home);
+		const displayedPath = () => modal.modalEl.querySelector('.fp-path')?.getAttribute('title');
+		const keystroke = (char: string) => {
+			modal.inputEl.value += char;
+			modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		};
+
+		keystroke('~');
+		expect(modal.inputEl.value).toBe('~/');
+		expect(displayedPath()).toBe(home);
+
+		keystroke('/');
+		expect(modal.inputEl.value).toBe('~/');
+		expect(displayedPath()).toBe(home);
+
+		keystroke('D');
+		expect(modal.inputEl.value).toBe('~/D');
+		expect(displayedPath()).toBe(home);
+		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+	});
+
+	it('repeated slashes right after a completed prefix collapse to a single slash', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
+		modal.open();
+		const keystroke = (char: string) => {
+			modal.inputEl.value += char;
+			modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		};
+
+		keystroke('^');
+		keystroke('/');
+		keystroke('/');
+		expect(modal.inputEl.value).toBe('^/');
+	});
+
+	it('does not complete a prefix that is not typed alone', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
+		modal.open();
+		const keystroke = (char: string) => {
+			modal.inputEl.value += char;
+			modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		};
+
+		keystroke('a');
+		keystroke('~');
+		expect(modal.inputEl.value).toBe('a~');
+
+		keystroke('^');
+		expect(modal.inputEl.value).toBe('a~^');
+	});
+
+	it('does not re-complete a prefix after the user deletes the slash', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
+		modal.open();
+		const keystroke = (char: string) => {
+			modal.inputEl.value += char;
+			modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		};
+		const backspace = () => {
+			modal.inputEl.value = modal.inputEl.value.slice(0, -1);
+			modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		};
+
+		keystroke('~');
+		expect(modal.inputEl.value).toBe('~/');
+		backspace();
+		expect(modal.inputEl.value).toBe('~');
+	});
+
+	it('typing ~\\ treats the backslash as a path separator on Windows', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
+		modal.open();
+
+		modal.inputEl.value = '~\\';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(modal.inputEl.value).toBe('~\\');
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe(resolveHome());
 	});
 
 	it('~name without slash is treated as ordinary search text, not user home', () => {
@@ -2323,32 +2408,34 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		modal.inputEl.value = '~otheruser';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
-		// Stays in vault
 		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('/');
 	});
 
-	it('^ alone in query navigates to vault top and sets vault icon', () => {
+	it('^ alone completes to ^/ and previews the vault top', () => {
 		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path');
 		modal.open();
 
 		modal.inputEl.value = '^';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
-		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+		expect(modal.inputEl.value).toBe('^/');
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('/');
 		const indicator = modal.modalEl.querySelector('.fp-external-indicator');
 		expect(indicator?.getAttribute('data-icon')).toBe('vault');
-		expect(modal.inputEl.value).toBe('');
 	});
 
-	it('^/ navigates to vault root and continues path from vault top', () => {
+	it('^/ previews the vault root and keeps the typed query', () => {
 		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path');
 		modal.open();
 
 		modal.inputEl.value = '^/';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
 
-		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+		expect(modal.inputEl.value).toBe('^/');
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('/');
 	});
+
 
 	it('^name without slash is treated as ordinary search text', () => {
 		const modal = new VaultPathSuggestModal(app, 'C:/Some/Other/Path', true, ['title'], false, true);
@@ -2360,20 +2447,48 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		expect(modal.currentLocation.absPath).toBe('C:/Some/Other/Path');
 	});
 
-	it('/ within vault goes to vault top, but outside goes to OS root', () => {
+	it('typing a drive prefix works instead of triggering the colon operator', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
+		modal.open();
+		modal.inputEl.value = 'C';
+		const colonEvent = new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true });
+		modal.inputEl.dispatchEvent(colonEvent);
+		expect(colonEvent.defaultPrevented).toBe(false);
+
+		modal.inputEl.value = 'C:/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('C:/');
+
+		modal.inputEl.value = 'Notes';
+		const revealEvent = new KeyboardEvent('keydown', { key: ':', bubbles: true, cancelable: true });
+		modal.inputEl.dispatchEvent(revealEvent);
+		expect(revealEvent.defaultPrevented).toBe(true);
+	});
+
+	it('a typed drive query previews that drive root', () => {
+		const modal = new VaultPathSuggestModal(app, 'C:/TestVault', true, ['title'], false, true);
+		modal.open();
+
+		modal.inputEl.value = 'D:/';
+		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('D:/');
+	});
+
+	it('/ previews the vault top inside the vault, but the OS root outside', () => {
 		// Inside vault
 		const inVaultModal = new VaultPathSuggestModal(app, 'C:/TestVault');
 		inVaultModal.open();
 		inVaultModal.inputEl.value = '/';
 		inVaultModal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-		expect(inVaultModal.currentLocation.absPath).toBe('C:/TestVault');
+		expect(inVaultModal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('/');
 
 		// Outside vault on Windows
 		const outsideModal = new VaultPathSuggestModal(app, 'C:/Users/scott/repos', true, ['title'], false, true);
 		outsideModal.open();
 		outsideModal.inputEl.value = '/';
 		outsideModal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-		expect(outsideModal.currentLocation.absPath).toBe('C:/');
+		expect(outsideModal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('C:/');
 	});
 
 	it('getSystemRootLocation resolves drive root or filesystem root correctly', () => {
@@ -2383,7 +2498,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		expect(getSystemRootLocation(app, { absPath: '//server/share/docs' }).absPath).toBe('//server/share');
 	});
 
-	it('mobile hides ~ in footer and treats ~ as vault root', () => {
+	it('mobile hides ~ in footer and treats ~ as literal text', () => {
 		Platform.isMobile = true;
 		const modal = new VaultPathSuggestModal(app, 'C:/TestVault');
 		modal.open();
@@ -2392,10 +2507,12 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		expect(footerText).not.toContain('~');
 		expect(footerText).toContain('^');
 
-		// Typing ~ on mobile treats it as ^ (vault root)
+		// Typing ~ on mobile stays put and searches literally; it is not a home shortcut.
 		modal.inputEl.value = '~';
 		modal.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-		expect(modal.currentLocation.absPath).toBe('C:/TestVault');
+		expect(modal.inputEl.value).toBe('~');
+		expect(modal.modalEl.querySelector('.fp-path')?.getAttribute('title')).toBe('/');
+		expect(modal.getSuggestions('~')).toEqual([]);
 	});
 
 	it('Location abstraction provides canCreate, canLink, canReveal, list, and parent', async () => {

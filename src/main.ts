@@ -568,79 +568,45 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		return this.cachedHomeDir;
 	}
 
-	private isClearingShortcut = false;
+	private tildeNoticeShown = false;
+	private lastInputValue = '';
+	private completedPrefix: string | null = null;
 
 	private readonly onInput = (): void => {
-		if (this.isClearingShortcut) return;
-		const val = this.inputEl.value;
-		if ((val === '~' || val.startsWith('~/')) && !this.browseOutsideVault) {
-			this.isClearingShortcut = true;
-			this.inputEl.value = '';
-			this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-			this.isClearingShortcut = false;
-			this.noticeBrowseOutsideVaultDisabled();
-			return;
+		const previous = this.lastInputValue;
+		const typed = this.inputEl.value;
+		const completed = this.completedPrefix;
+		this.completedPrefix = null;
+
+		if (completed !== null && typed.length > completed.length && typed.startsWith(completed) && /^\/+$/.test(typed.slice(completed.length))) {
+			this.inputEl.value = completed;
+			this.completedPrefix = completed;
+		} else if (previous === '' && (typed === '^' || (typed === '~' && this.canCompleteHome()))) {
+			this.inputEl.value = `${typed}/`;
+			this.completedPrefix = `${typed}/`;
 		}
-		if (val === '^') {
-			this.currentLocation = this.getVaultRootLocation();
-			this.updateCurrentPathDisplay();
-			this.isClearingShortcut = true;
-			this.inputEl.value = '';
-			this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-			this.isClearingShortcut = false;
-			return;
-		}
-		if (val.startsWith('^/')) {
-			this.currentLocation = this.getVaultRootLocation();
-		} else if (val === '~') {
-			const home = this.resolveHome();
-			if (home) {
-				this.currentLocation = makeLocation(this.app, home, {
-					browseOutsideVault: this.browseOutsideVault,
-					allowCreateOutsideVault: this.allowCreateOutsideVault,
-				});
-				this.updateCurrentPathDisplay();
-				this.isClearingShortcut = true;
-				this.inputEl.value = '';
-				this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-				this.isClearingShortcut = false;
-				return;
-			} else if (Platform.isMobile) {
-				this.currentLocation = this.getVaultRootLocation();
-				this.updateCurrentPathDisplay();
-				this.isClearingShortcut = true;
-				this.inputEl.value = '';
-				this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-				this.isClearingShortcut = false;
-				return;
-			} else {
-				this.isClearingShortcut = true;
-				this.inputEl.value = '';
-				this.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-				this.isClearingShortcut = false;
-				new Notice('User home directory could not be resolved.');
-				return;
+		this.lastInputValue = this.inputEl.value;
+
+		const tildePrefix = !Platform.isMobile && /^~($|[/\\])/.test(this.lastInputValue);
+		if (tildePrefix) {
+			if (!this.tildeNoticeShown) {
+				this.tildeNoticeShown = true;
+				if (!this.browseOutsideVault) {
+					this.noticeBrowseOutsideVaultDisabled();
+				} else if (!this.resolveHome()) {
+					new Notice('User home directory could not be resolved.');
+				}
 			}
-		} else if (val.startsWith('~/')) {
-			const home = this.resolveHome();
-			if (home) {
-				this.currentLocation = makeLocation(this.app, home, {
-					browseOutsideVault: this.browseOutsideVault,
-					allowCreateOutsideVault: this.allowCreateOutsideVault,
-				});
-			} else if (Platform.isMobile) {
-				this.currentLocation = this.getVaultRootLocation();
-			} else {
-				new Notice('User home directory could not be resolved.');
-			}
-		} else if (!this.currentLocation.inVault && (val === '/' || val.startsWith('/'))) {
-			this.currentLocation = getSystemRootLocation(this.app, this.currentLocation, {
-				browseOutsideVault: this.browseOutsideVault,
-				allowCreateOutsideVault: this.allowCreateOutsideVault,
-			});
+		} else {
+			this.tildeNoticeShown = false;
 		}
 		this.updateCurrentPathDisplay();
 	};
+
+	private canCompleteHome(): boolean {
+		return !Platform.isMobile && this.resolveHome() !== null;
+	}
+
 
 	private readonly onInputKeydown = (event: KeyboardEvent): void => {
 		if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -676,6 +642,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		if (event.key === ':' || event.key === '?' || event.key === '*') {
+			if (event.key === ':' && Platform.isWin && /^[a-zA-Z]$/.test(this.inputEl.value)) return;
 			event.preventDefault();
 			this.runSelectedOperator(event.key);
 			return;
@@ -1087,17 +1054,18 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (!completedName) return;
 
 		const val = this.inputEl.value;
+		const lastSeparator = (text: string): number => Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
 		let prefix = '';
 		if (val.startsWith('^')) {
 			const withoutCaret = val.slice(1);
-			const slashIndex = withoutCaret.lastIndexOf('/');
+			const slashIndex = lastSeparator(withoutCaret);
 			prefix = slashIndex >= 0 ? `^${withoutCaret.slice(0, slashIndex + 1)}` : '^/';
 		} else if (val.startsWith('~')) {
 			const withoutTilde = val.slice(1);
-			const slashIndex = withoutTilde.lastIndexOf('/');
+			const slashIndex = lastSeparator(withoutTilde);
 			prefix = slashIndex >= 0 ? `~${withoutTilde.slice(0, slashIndex + 1)}` : '~/';
 		} else {
-			const slashIndex = val.lastIndexOf('/');
+			const slashIndex = lastSeparator(val);
 			prefix = slashIndex >= 0 ? val.slice(0, slashIndex + 1) : '';
 		}
 
@@ -1939,40 +1907,38 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		let baseLocation: PaletteLocation;
 		let remainingQuery: string;
 
-		if (query === '~' || query.startsWith('~/')) {
-			const home = this.resolveHome();
+		const isSeparator = (char: string | undefined): boolean => char === '/' || char === '\\';
+		const hasPrefixBody = (): boolean => query.length === 1 || isSeparator(query[1]);
+		const caretRest = query.startsWith('^') && hasPrefixBody() ? query.slice(query.length === 1 ? 1 : 2) : null;
+		const tildeRest = query.startsWith('~') && hasPrefixBody() ? query.slice(query.length === 1 ? 1 : 2) : null;
+		const driveMatch = Platform.isWin ? query.match(/^([a-zA-Z]):(?:[/\\](.*))?$/) : null;
+		const uncMatch = Platform.isWin
+			? query.match(/^[/\\]{2}([^/\\]+)[/\\]([^/\\]+)(?:[/\\](.*))?$/)
+			: null;
+
+		if (caretRest !== null) {
+			baseLocation = this.getVaultRootLocation();
+			remainingQuery = caretRest;
+		} else if (tildeRest !== null) {
+			const home = Platform.isMobile ? null : this.resolveHome();
 			if (home) {
 				baseLocation = makeLocation(this.app, home, locationOptions);
-				remainingQuery = query === '~' ? '' : query.slice(2);
-			} else if (Platform.isMobile) {
-				baseLocation = this.getVaultRootLocation();
-				remainingQuery = query === '~' ? '' : query.slice(2);
-			} else {
-				return { location: this.currentLocation, name: query };
-			}
-		} else if (query === '^' || query.startsWith('^/')) {
-			baseLocation = this.getVaultRootLocation();
-			remainingQuery = query === '^' ? '' : query.slice(2);
-		} else if (query.startsWith('/')) {
-			if (this.currentLocation.inVault) {
-				baseLocation = this.getVaultRootLocation();
-			} else {
-				baseLocation = getSystemRootLocation(this.app, this.currentLocation, locationOptions);
-			}
-			remainingQuery = query.slice(1);
-		} else if (/^[a-zA-Z]:(\/|\\)?/.test(query)) {
-			const drive = query.slice(0, 2).toUpperCase() + '/';
-			baseLocation = makeLocation(this.app, drive, locationOptions);
-			remainingQuery = query.slice(2).replace(/^[/\\]+/, '');
-		} else if (query.startsWith('//')) {
-			const uncMatch = query.match(/^(\/\/[^/]+\/[^/]+)(?:\/(.*))?$/);
-			if (uncMatch) {
-				baseLocation = makeLocation(this.app, uncMatch[1], locationOptions);
-				remainingQuery = uncMatch[2] ?? '';
+				remainingQuery = tildeRest;
 			} else {
 				baseLocation = this.currentLocation;
 				remainingQuery = query;
 			}
+		} else if (uncMatch) {
+			baseLocation = makeLocation(this.app, `//${uncMatch[1]}/${uncMatch[2]}`, locationOptions);
+			remainingQuery = uncMatch[3] ?? '';
+		} else if (query.startsWith('/') || (Platform.isWin && query.startsWith('\\'))) {
+			baseLocation = this.currentLocation.inVault
+				? this.getVaultRootLocation()
+				: getSystemRootLocation(this.app, this.currentLocation, locationOptions);
+			remainingQuery = query.slice(1).replace(/^[/\\]+/, '');
+		} else if (driveMatch) {
+			baseLocation = makeLocation(this.app, `${driveMatch[1].toUpperCase()}:/`, locationOptions);
+			remainingQuery = driveMatch[2] ?? '';
 		} else {
 			baseLocation = this.currentLocation;
 			remainingQuery = query;
