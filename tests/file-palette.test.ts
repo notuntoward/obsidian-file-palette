@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { ScriptTarget, transpileModule } from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import FilePalettePlugin, {
 	alignFuzzyRanges,
@@ -186,6 +187,7 @@ describe('file palette picker', () => {
 
 	afterEach(() => {
 		VaultPathSuggestModal.closeActiveModal();
+		delete (document as unknown as { activeElement?: unknown }).activeElement;
 		vi.unstubAllGlobals();
 	});
 
@@ -306,6 +308,212 @@ describe('file palette picker', () => {
 		expect(modal?.modalEl.querySelectorAll('.fp-footer-actions .fp-hint-line')).toHaveLength(1);
 		expect(modal?.modalEl.querySelectorAll('.fp-footer-openers .fp-hint-line')).toHaveLength(1);
 	});
+
+	it('keeps a large suggestion list unchanged when scrolled to the bottom', async () => {
+		for (let index = 0; index < 1100; index++) {
+			addFile(currentFolder, `Bulk ${String(index).padStart(4, '0')}.md`);
+		}
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+
+		const suggestions = modal.getSuggestions('');
+		const render = (entry: unknown) => {
+			const element = document.createElement('div');
+			element.addClass('suggestion-item');
+			modal.renderSuggestion(entry, element);
+			modal.resultContainerEl.appendChild(element);
+		};
+		for (const entry of suggestions) render(entry);
+		const addSuggestion = vi.fn(render);
+		(modal as unknown as { chooser: unknown }).chooser = {
+			selectedItem: 0,
+			values: suggestions,
+			setSelectedItem: vi.fn(),
+			addSuggestion,
+		};
+
+		const scroller = modal.resultContainerEl;
+		Object.defineProperty(scroller, 'clientHeight', { value: 200, configurable: true });
+		Object.defineProperty(scroller, 'scrollHeight', { value: 1000, configurable: true });
+		scroller.scrollTop = 800;
+		const initialCount = scroller.querySelectorAll('.suggestion-item').length;
+		scroller.dispatchEvent(new Event('scroll'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(scroller.querySelectorAll('.suggestion-item')).toHaveLength(initialCount);
+		expect(addSuggestion).not.toHaveBeenCalled();
+		expect(initialCount).toBe(1102);
+	});
+
+	it('moves PageDown by the visible row count instead of the selected row height', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+		const { chooser } = installPagingList(modal, 30, 100, 800);
+		modal.inputEl.focus();
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(7);
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(14);
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(7);
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(29);
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(0);
+	});
+
+	it('corrects native paging in a variable-height list', async () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+		const { chooser, elements } = installPagingList(modal, 40, 100, 800);
+		modal.inputEl.focus();
+		Object.defineProperty(elements[7], 'offsetHeight', { value: 400, configurable: true });
+		elements[7].getBoundingClientRect = () =>
+			({ top: 7 * 100, bottom: 7 * 100 + 400, height: 400 }) as DOMRect;
+
+		chooser.setSelectedItem(7);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBeGreaterThan(7);
+	});
+
+	it('selects the true last suggestion immediately on End in a large folder', () => {
+		for (let index = 0; index < 1100; index++) {
+			addFile(currentFolder, `Bulk ${String(index).padStart(4, '0')}.md`);
+		}
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+		const suggestions = modal.getSuggestions('');
+		const { chooser, elements } = installPagingList(modal, suggestions.length, 20, 160);
+		suggestions.forEach((entry, index) => modal.renderSuggestion(entry, elements[index]));
+		modal.inputEl.focus();
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(1101);
+		expect(elements[chooser.selectedItem]?.textContent).toBe('Nested/');
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(0);
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(7);
+	});
+
+	it('handles large-list paging in the modal owner window', () => {
+		for (let index = 0; index < 1001; index++) {
+			addFile(currentFolder, `Bulk ${String(index).padStart(4, '0')}.md`);
+		}
+		const popoutDocument = document.implementation.createHTMLDocument('popout');
+		const popoutWindow = new EventTarget();
+		Object.defineProperty(popoutDocument, 'defaultView', { value: popoutWindow, configurable: true });
+		vi.stubGlobal('activeDocument', popoutDocument);
+		vi.stubGlobal('activeWindow', popoutWindow);
+		const instance = new VaultPathSuggestModal(app, currentFolder as never);
+		popoutDocument.body.appendChild(instance.modalEl);
+		instance.open();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal');
+		const suggestions = modal.getSuggestions('');
+		const { chooser } = installPagingList(modal, suggestions.length, 20, 160);
+
+		popoutWindow.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(1002);
+		expect(suggestions[chooser.selectedItem]?.file).toBe(nestedFolder);
+		popoutWindow.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(0);
+		popoutWindow.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }));
+		expect(chooser.selectedItem).toBe(7);
+	});
+
+	it('keeps paging free of bare window globals and incremental-loading hooks', () => {
+		const source = readFileSync(resolve('src/main.ts'), 'utf8');
+		const code = transpileModule(source, { compilerOptions: { removeComments: true, target: ScriptTarget.ESNext } }).outputText;
+		expect(/\b(?:pendingSuggestions|takeSuggestionBatch|appendPendingSuggestions|appendAllPendingSuggestions|revealPendingSuggestionsNearEnd|onResultsScroll)\b/.test(code)).toBe(false);
+		expect(/(?<![\w$.])(?:document|window|navigator)\s*(?:\?\.|\.)\s*(?:activeElement|querySelector(?:All)?|body|addEventListener|removeEventListener|setTimeout|clearTimeout|setInterval|clearInterval|requestAnimationFrame|cancelAnimationFrame|getSelection|clipboard)\b/.test(code)).toBe(false);
+	});
+
+	it('applies one page after a native handler that runs first', async () => {
+		let nativeHandler: ((key: string) => void) | null = null;
+		const nativeListener = (event: KeyboardEvent) => {
+			nativeHandler?.(event.key);
+			event.preventDefault();
+			event.stopPropagation();
+		};
+		window.addEventListener('keydown', nativeListener, true);
+		try {
+			runCommand('open-palette');
+			const modal = SuggestModal.instances.at(-1);
+			if (!modal) throw new Error('Expected modal');
+			const { chooser } = installPagingList(modal, 60, 100, 800);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			nativeHandler = (key) => {
+				if (key === 'PageDown') chooser.setSelectedItem(7);
+			};
+			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }));
+			expect(chooser.selectedItem).toBe(7);
+
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			nativeHandler = (key) => {
+				if (key === 'PageDown') chooser.setSelectedItem(7);
+			};
+			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true }));
+			expect(chooser.selectedItem).toBe(14);
+		} finally {
+			window.removeEventListener('keydown', nativeListener, true);
+		}
+	});
+
+	function installPagingList(modal: SuggestModal<any>, count: number, rowHeight: number, viewport: number) {
+		const scroller = modal.resultContainerEl;
+		const ownerDocument = modal.modalEl.ownerDocument;
+		scroller.replaceChildren();
+		Object.defineProperty(ownerDocument, 'activeElement', {
+			configurable: true,
+			get: () => modal.inputEl,
+		});
+		Object.defineProperty(scroller, 'clientHeight', { value: viewport, configurable: true });
+		scroller.getBoundingClientRect = () => ({ top: 0, bottom: viewport, height: viewport }) as DOMRect;
+		const elements: HTMLElement[] = [];
+		const sync = () => {
+			scroller.querySelectorAll<HTMLElement>('.suggestion-item').forEach((element, index) => {
+				const top = index * rowHeight - scroller.scrollTop;
+				element.getBoundingClientRect = () =>
+					({ top, bottom: top + rowHeight, height: rowHeight }) as DOMRect;
+			});
+		};
+		for (let index = 0; index < count; index++) {
+			const element = ownerDocument.createElement('div');
+			element.addClass('suggestion-item');
+			scroller.appendChild(element);
+			Object.defineProperty(element, 'offsetHeight', { value: rowHeight, configurable: true });
+			elements.push(element);
+		}
+		const chooser = {
+			selectedItem: 0,
+			values: Array.from({ length: count }, (_, item) => ({ item })),
+			setSelectedItem(index: number) {
+				chooser.selectedItem = index;
+				elements.forEach((element, itemIndex) =>
+					element.classList.toggle('is-selected', itemIndex === index),
+				);
+				scroller.scrollTop = Math.max(0, index * rowHeight + rowHeight - viewport);
+				sync();
+			},
+		};
+		(modal as unknown as { chooser: unknown }).chooser = chooser;
+		chooser.setSelectedItem(0);
+		sync();
+		return { chooser, elements, sync };
+	}
 
 	it('organizes settings into unheaded general, Search, and Outside the vault groups with safe defaults', () => {
 		const settingTab = plugin.settingTabs[0];
@@ -1526,20 +1734,22 @@ describe('file palette picker', () => {
 		expect(VaultPathSuggestModal.getActiveModal()).toBeNull();
 	});
 
-	it('caps suggestions to the modal limit when a folder contains more than 100 items', async () => {
+	it('returns every suggestion for empty and matching queries in a folder with over 1000 files', async () => {
 		const largeFolder = addFolder(root, 'large-folder');
-		for (let i = 0; i < 150; i++) {
-			addFile(largeFolder, `bulk-file-${String(i).padStart(3, '0')}.md`);
+		for (let i = 0; i < 1100; i++) {
+			addFile(largeFolder, `bulk-file-${String(i).padStart(4, '0')}.md`);
 		}
 
 		const modal = new VaultPathSuggestModal(app, largeFolder as never);
+		expect(modal.limit).toBe(0);
 		const emptySuggestions = await Promise.resolve(modal.getSuggestions(''));
-		// Has parent folder suggestion + 99 files = 100 total
-		expect(emptySuggestions).toHaveLength(100);
+		expect(emptySuggestions).toHaveLength(1101);
 		expect(emptySuggestions[0]?.isParent).toBe(true);
+		expect(emptySuggestions.at(-1)?.file?.name).toBe('bulk-file-1099.md');
 
 		const searchSuggestions = await Promise.resolve(modal.getSuggestions('bulk'));
-		expect(searchSuggestions.length).toBeLessThanOrEqual(100);
+		expect(searchSuggestions).toHaveLength(1100);
+		expect(searchSuggestions.at(-1)?.file?.name).toBe('bulk-file-1099.md');
 	});
 
 	it('does not read metadata cache on empty query when showPropertyMatches is disabled', async () => {

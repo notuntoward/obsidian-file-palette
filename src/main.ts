@@ -40,7 +40,7 @@ import {
 } from 'commons/windows';
 import { applyFilePageColor } from 'commons/color';
 import { collectVaultMetadata, navigatePropertyRows, propertyNamePickerOptions, ValuePicker } from 'commons/properties';
-import { renderKeyHints, type KeyHint } from 'commons/modal';
+import { getChooser, renderKeyHints, setSelectedItemSafely, type KeyHint } from 'commons/modal';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
@@ -562,7 +562,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private readonly entryBySuggestion = new WeakMap<HTMLElement, VaultEntry>();
 	private readonly searchDataCache = new Map<string, { fields: SearchableField[]; displayProperties: RawProperty[] }>();
 	private cachedHomeDir: string | null | undefined = undefined;
-	limit = 100;
+	limit = 0;
 	private pathEl: HTMLDivElement | null = null;
 	private indicatorEl: HTMLSpanElement | null = null;
 	private pathEllipsisEl: HTMLSpanElement | null = null;
@@ -571,6 +571,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	private pathSegmentSeparators: (HTMLSpanElement | null)[] = [];
 	private pathResizeObserver: ResizeObserver | null = null;
 	private suggestionObserver: MutationObserver | null = null;
+	private modalWindow: Window | null = null;
+	private lastObservedSelection = 0;
 	currentLocation: PaletteLocation;
 
 	resolveHome(): string | null {
@@ -931,7 +933,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		if (this.resultContainerEl && typeof MutationObserver !== 'undefined') {
-			this.suggestionObserver = new MutationObserver(() => this.updateFooterHints());
+			this.suggestionObserver = new MutationObserver(() => {
+				this.updateFooterHints();
+				this.updateObservedSelection();
+			});
 			this.suggestionObserver.observe(this.resultContainerEl, {
 				attributes: true,
 				subtree: true,
@@ -940,6 +945,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			});
 		}
 
+		this.modalWindow = ownerWindow(this.modalEl);
+		this.modalWindow?.addEventListener('keydown', this.onWindowKeydown, true);
 		this.inputEl.addEventListener('keydown', this.onInputKeydown);
 		this.inputEl.addEventListener('input', this.onInput);
 	}
@@ -950,6 +957,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 		this.inputEl.removeEventListener('keydown', this.onInputKeydown);
 		this.inputEl.removeEventListener('input', this.onInput);
+		this.modalWindow?.removeEventListener('keydown', this.onWindowKeydown, true);
+		this.modalWindow = null;
 		this.pathResizeObserver?.disconnect();
 		this.pathResizeObserver = null;
 		this.suggestionObserver?.disconnect();
@@ -1844,14 +1853,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				return pathCollator.compare(leftPath, rightPath);
 			});
 
-			const maxEntries = hasParent ? this.limit - 1 : this.limit;
-			const suggestions: VaultEntry[] = entries.slice(0, maxEntries);
-
-			if (hasParent) {
-				suggestions.unshift(this.parentEntry);
-			}
-
-			return suggestions;
+			return hasParent ? [this.parentEntry, ...entries] : entries;
 		}
 
 		const searchers = words.map((word) => prepareFuzzySearch(word));
@@ -1983,17 +1985,78 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return pathCollator.compare(leftPath, rightPath);
 		});
 
-		const maxEntries = hasParent || parentRequestedAtVaultRoot ? this.limit - 1 : this.limit;
-		const suggestions: VaultEntry[] = entries.slice(0, maxEntries).map(({ entry }) => entry);
-
-		if (
+		const matched = entries.map(({ entry }) => entry);
+		const includeParent =
 			(hasParent || parentRequestedAtVaultRoot) &&
-			words.every((word) => prepareFuzzySearch(word)('..'))
-		) {
-			suggestions.unshift(this.parentEntry);
+			words.every((word) => prepareFuzzySearch(word)('..'));
+		return includeParent ? [this.parentEntry, ...matched] : matched;
+	}
+
+	/**
+	 * Corrects Obsidian's native paging after its window-capture scope handler
+	 * has run. That handler measures a page with the selected row's height, so
+	 * variable-height rows (name plus property lines) can leave PageDown stuck.
+	 * This listener runs on the same window later in the same capture phase,
+	 * which is still reached after Obsidian's stopPropagation.
+	 */
+	private readonly onWindowKeydown = (event: KeyboardEvent): void => {
+		if (VaultPathSuggestModal.activeModal !== this) return;
+		if (this.modalEl.ownerDocument.activeElement !== this.inputEl) return;
+		if (event.isComposing || event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return;
+		const { key } = event;
+		if (key !== 'PageDown' && key !== 'PageUp' && key !== 'Home' && key !== 'End') return;
+
+		const items = Array.from(this.resultContainerEl.querySelectorAll<HTMLElement>('.suggestion-item'));
+		if (items.length === 0) return;
+		const selected = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const current = selected ? Math.max(0, items.indexOf(selected)) : 0;
+		const before = Math.min(this.lastObservedSelection, items.length - 1);
+		const last = items.length - 1;
+
+		let next: number;
+		if (key === 'Home') {
+			next = 0;
+		} else if (key === 'End') {
+			next = last;
+		} else {
+			const step = this.getVisibleSuggestionCount(items, before);
+			next = key === 'PageDown' ? Math.min(last, before + step) : Math.max(0, before - step);
 		}
 
-		return suggestions;
+		event.preventDefault();
+		this.lastObservedSelection = next;
+		if (next !== current) {
+			const chooser = getChooser(this as unknown as SuggestModal<unknown>);
+			if (chooser) setSelectedItemSafely(chooser, next);
+		}
+	};
+
+	private updateObservedSelection(): void {
+		const items = this.resultContainerEl.querySelectorAll('.suggestion-item');
+		const selected = this.resultContainerEl.querySelector('.suggestion-item.is-selected');
+		this.lastObservedSelection = selected ? Math.max(0, Array.prototype.indexOf.call(items, selected)) : 0;
+	}
+
+	private getVisibleSuggestionCount(items: HTMLElement[], index: number): number {
+		const scroller = this.resultContainerEl;
+		const viewport = scroller.clientHeight;
+		if (viewport <= 0) return 1;
+
+		const scrollerTop = scroller.getBoundingClientRect().top;
+		const scrollerBottom = scrollerTop + viewport;
+		const rectOf = (item: HTMLElement): DOMRect => item.getBoundingClientRect();
+		const start = Math.min(Math.max(index, 0), items.length - 1);
+
+		let first = start;
+		while (first > 0 && rectOf(items[first - 1]).bottom > scrollerTop) first--;
+		let last = start;
+		while (last < items.length - 1 && rectOf(items[last + 1]).top < scrollerBottom) last++;
+
+		const visible = last - first + 1;
+		if (visible > 1) return visible - 1;
+
+		const rowHeight = items[start]?.offsetHeight ?? 0;
+		return rowHeight > 0 ? Math.max(1, Math.floor(viewport / rowHeight) - 1) : 1;
 	}
 
 	private getQueryLocation(query: string): { location: PaletteLocation; name: string } | null {

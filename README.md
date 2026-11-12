@@ -20,6 +20,8 @@ A fast file and folder picker for jumping to files and browsing folders.
 | Key | Action |
 | --- | --- |
 | Up / Down | Highlight a suggestion |
+| Page Up / Page Down | Move the highlight up or down by one page of suggestions (geometry-corrected for variable-height rows) |
+| Home / End | Move the highlight to the first or last suggestion (Obsidian's picker default) |
 | Enter | Open in current tab or browse into a folder |
 | Shift+Enter | Create a new file in the current folder using the search query |
 | Ctrl+Shift+Enter; Cmd+Shift+Enter | Open in a new tab |
