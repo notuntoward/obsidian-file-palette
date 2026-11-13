@@ -37,6 +37,10 @@ export default defineConfig({
         replacement: path.resolve(import.meta.dirname, '../obsidian-commons/src/os/index.ts'),
       },
       {
+        find: 'commons/testing/obsidian-mock',
+        replacement: path.resolve(import.meta.dirname, '../obsidian-commons/src/testing/obsidian-mock.ts'),
+      },
+      {
         find: 'commons/testing',
         replacement: path.resolve(import.meta.dirname, '../obsidian-commons/src/testing/index.ts'),
       },

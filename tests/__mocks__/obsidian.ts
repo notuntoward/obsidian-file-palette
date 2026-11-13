@@ -2,6 +2,9 @@
 // resolve `import { ... } from "obsidian"` without the real Obsidian runtime.
 // Extend these stubs as your tests need them.
 
+import { Scope } from 'commons/testing/obsidian-mock';
+export { Scope };
+
 export class Plugin {
 	app: any;
 	manifest: any;
@@ -169,21 +172,27 @@ export class Modal {
         static instances: Modal[] = [];
 
 	app: any;
+	containerEl: HTMLElement;
 	modalEl: HTMLElement;
 	contentEl: any;
 	titleEl: HTMLElement;
-        scope = {
-                register: (
-                        _modifiers: string[] | null,
-                        _key: string | null,
-                        _callback: (event: KeyboardEvent) => false | void,
-                ) => ({}),
-        };
+	scope = new Scope();
+	private scopeWindow: Window | null = null;
+	private readonly handleScopeKey = (event: Event): void => {
+		const key = event as KeyboardEvent;
+		if (!this.scope.handleKey(key)) {
+			key.preventDefault();
+			key.stopPropagation();
+		}
+	};
 
 	constructor(app: any) {
 		this.app = app;
 		installDomHelpers();
+		this.containerEl = document.createElement('div');
 		this.modalEl = document.createElement('div');
+		this.containerEl.appendChild(this.modalEl);
+		this.scope.setTabFocusContainerEl(this.containerEl);
 		this.contentEl = document.createElement('div');
 		this.titleEl = document.createElement('div');
 		this.modalEl.append(this.titleEl, this.contentEl);
@@ -191,9 +200,13 @@ export class Modal {
 	}
 
 	open(): void {
+		this.scopeWindow = this.modalEl.ownerDocument.defaultView;
+		this.scopeWindow?.addEventListener('keydown', this.handleScopeKey, true);
 		this.onOpen();
 	}
 	close(): void {
+		this.scopeWindow?.removeEventListener('keydown', this.handleScopeKey, true);
+		this.scopeWindow = null;
 		this.onClose();
 	}
 	onOpen(): void {}
@@ -208,6 +221,7 @@ export class SuggestModal<T> extends Modal {
 	instructions: { command: string; purpose: string }[] = [];
 	placeholder = '';
 	limit = 100;
+	chooser: any;
 
 	constructor(app: any) {
 		super(app);
@@ -218,6 +232,10 @@ export class SuggestModal<T> extends Modal {
 		inputContainer.append(this.inputEl);
 		this.contentEl.appendChild(this.resultContainerEl);
 		this.modalEl.insertBefore(inputContainer, this.contentEl);
+		this.scope.register([], 'Home', () => { this.chooser?.setSelectedItem(0); return false; });
+		this.scope.register([], 'End', () => { this.chooser?.setSelectedItem(this.chooser.values.length - 1); return false; });
+		this.scope.register([], 'PageDown', () => { this.chooser?.setSelectedItem(Math.min(this.chooser.values.length - 1, this.chooser.selectedItem + 14)); return false; });
+		this.scope.register([], 'PageUp', () => { this.chooser?.setSelectedItem(Math.max(0, this.chooser.selectedItem - 14)); return false; });
 		SuggestModal.instances.push(this as SuggestModal<unknown>);
 	}
 
