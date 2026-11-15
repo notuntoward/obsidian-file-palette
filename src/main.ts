@@ -50,6 +50,7 @@ interface FilePaletteSettings {
 	showPropertyMatches: boolean;
 	browseOutsideVault: boolean;
 	allowCreateOutsideVault: boolean;
+	showHiddenFiles: boolean;
 }
 
 const DEFAULT_SETTINGS: FilePaletteSettings = {
@@ -58,6 +59,7 @@ const DEFAULT_SETTINGS: FilePaletteSettings = {
 	showPropertyMatches: false,
 	browseOutsideVault: false,
 	allowCreateOutsideVault: false,
+	showHiddenFiles: false,
 };
 
 export interface PaletteItem {
@@ -67,11 +69,14 @@ export interface PaletteItem {
 	extension: string;
 	absPath: string;
 	file: TAbstractFile | null;
+	// Vault-relative path of an item inside the vault that Obsidian does not index (dot files and folders).
+	vaultPath?: string;
 }
 
 export interface LocationOptions {
 	browseOutsideVault?: boolean;
 	allowCreateOutsideVault?: boolean;
+	showHiddenFiles?: boolean;
 }
 
 export interface PaletteLocation {
@@ -93,6 +98,9 @@ export const norm = (p: string): string => {
 };
 
 const pathCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+// Entries in one list share a parent folder, so names order them the same as full paths and also work for unindexed items.
+const entrySortKey = (entry: VaultEntry): string => entry.name ?? entry.file?.path ?? entry.absPath ?? '';
 
 export function vaultBase(app: App): string | null {
 	const a = app.vault?.adapter;
@@ -225,6 +233,14 @@ function makeItemAbsPath(loc: { absPath: string }, name: string): string {
 	return norm(`${loc.absPath}/${name}`);
 }
 
+function splitItemName(name: string): { basename: string; extension: string } {
+	const extIndex = name.lastIndexOf('.');
+	return {
+		basename: extIndex > 0 ? name.slice(0, extIndex) : name,
+		extension: extIndex > 0 ? name.slice(extIndex + 1) : '',
+	};
+}
+
 const EXTERNAL_LINK_IMAGE_EXTENSIONS = new Set(['bmp', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif']);
 
 export function generateExternalMarkdownLink(targetPath: string, isFolder = false): string {
@@ -320,7 +336,9 @@ export class PaletteLocationImpl implements PaletteLocation {
 			return [];
 		}
 		if (this.inVault) {
-			return this.listSync();
+			const indexed = this.listSync();
+			if (!(this.options.showHiddenFiles ?? DEFAULT_SETTINGS.showHiddenFiles)) return indexed;
+			return [...indexed, ...(await this.listUnindexed(indexed))];
 		}
 
 		if (!Platform.isDesktopApp) return [];
@@ -344,17 +362,40 @@ export class PaletteLocationImpl implements PaletteLocation {
 				}
 				if (!isFolder && !isFile) continue;
 				const name = dirent.name;
-				const extIndex = name.lastIndexOf('.');
-				const basename = extIndex > 0 ? name.slice(0, extIndex) : name;
-				const extension = extIndex > 0 ? name.slice(extIndex + 1) : '';
 				items.push({
 					name,
 					isFolder,
-					basename,
-					extension,
+					...splitItemName(name),
 					absPath: norm(`${this.absPath}/${name}`),
 					file: null,
 				});
+			}
+			return items;
+		} catch {
+			return [];
+		}
+	}
+
+	// Lists what is on disk but missing from the vault index (dot files and folders such as .obsidian).
+	private async listUnindexed(indexed: PaletteItem[]): Promise<PaletteItem[]> {
+		const known = new Set(indexed.map((item) => item.name));
+		const folderPath = (this.vaultRelPath ?? '/').replace(/^\/+/, '');
+		try {
+			const listing = await this.app.vault.adapter.list(folderPath || '/');
+			const items: PaletteItem[] = [];
+			for (const [paths, isFolder] of [[listing.folders, true], [listing.files, false]] as const) {
+				for (const vaultPath of paths) {
+					const name = vaultPath.slice(vaultPath.lastIndexOf('/') + 1);
+					if (known.has(name)) continue;
+					items.push({
+						name,
+						isFolder,
+						...splitItemName(name),
+						absPath: makeItemAbsPath(this, name),
+						file: null,
+						vaultPath,
+					});
+				}
 			}
 			return items;
 		} catch {
@@ -369,6 +410,9 @@ export class PaletteLocationImpl implements PaletteLocation {
 			const folder = getFolderFromLocation(this.app, this);
 			if (folder?.parent) {
 				return locationFromFolder(this.app, folder.parent, this.options);
+			}
+			if (!folder && this.vaultRelPath !== '/') {
+				return new PaletteLocationImpl(this.app, getParentPath(this.absPath), this.options);
 			}
 			return null;
 		}
@@ -521,6 +565,7 @@ export interface VaultEntry {
 	basename?: string;
 	extension?: string;
 	absPath?: string;
+	vaultPath?: string;
 }
 
 interface PropertyMatch {
@@ -642,7 +687,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				return;
 			}
 			if (entry.absPath) {
-				this.openExternalFile(entry.absPath, destination);
+				this.openExternalFile(entry.absPath, destination, entry.vaultPath);
 				return;
 			}
 		}
@@ -722,13 +767,11 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		private readonly showPropertyMatches = DEFAULT_SETTINGS.showPropertyMatches,
 		private readonly browseOutsideVault = DEFAULT_SETTINGS.browseOutsideVault,
 		private readonly allowCreateOutsideVault = DEFAULT_SETTINGS.allowCreateOutsideVault,
+		private readonly showHiddenFiles = DEFAULT_SETTINGS.showHiddenFiles,
 	) {
 		super(app);
 		attachSuggestionPaging(this as unknown as SuggestModal<unknown>);
-		const locationOptions = {
-			browseOutsideVault: this.browseOutsideVault,
-			allowCreateOutsideVault: this.allowCreateOutsideVault,
-		};
+		const locationOptions = this.locationOptions;
 		if (typeof locationOrFolder === 'string') {
 			this.currentLocation = makeLocation(app, locationOrFolder, locationOptions);
 		} else if ('absPath' in locationOrFolder && typeof locationOrFolder.list === 'function') {
@@ -744,6 +787,14 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.setPlaceholder('Search this folder; select a folder to open it');
 	}
 
+	private get locationOptions(): LocationOptions {
+		return {
+			browseOutsideVault: this.browseOutsideVault,
+			allowCreateOutsideVault: this.allowCreateOutsideVault,
+			showHiddenFiles: this.showHiddenFiles,
+		};
+	}
+
 	get currentFolder(): TFolder {
 		return getFolderFromLocation(this.app, this.currentLocation) ?? this.app.vault.getRoot();
 	}
@@ -753,7 +804,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (!target) return [];
 		const { location, name } = target;
 
-		if (location.inVault && location instanceof PaletteLocationImpl) {
+		if (location.inVault && location instanceof PaletteLocationImpl && !this.showHiddenFiles) {
 			const items = location.listSync();
 			return this.filterItems(items, name, location);
 		}
@@ -878,10 +929,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 						}
 					}
 				}
-				this.navigateToLocation(makeLocation(this.app, nextAbs, {
-					browseOutsideVault: this.browseOutsideVault,
-					allowCreateOutsideVault: this.allowCreateOutsideVault,
-				}));
+				this.navigateToLocation(makeLocation(this.app, nextAbs, this.locationOptions));
 			}
 			return;
 		}
@@ -893,7 +941,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		if (entry.absPath) {
-			this.openExternalFile(entry.absPath);
+			this.openExternalFile(entry.absPath, undefined, entry.vaultPath);
 		}
 	}
 
@@ -1132,6 +1180,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 					} else {
 						new Notice('Copying links is not available on this device.');
 					}
+				} else {
+					new Notice('Hidden files cannot be linked.');
 				}
 				return;
 			}
@@ -1184,7 +1234,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 	}
 
-	private openExternalFile(absPath: string, destination?: 'tab' | 'split' | 'window'): void {
+	private openExternalFile(absPath: string, destination?: 'tab' | 'split' | 'window', vaultPath?: string): void {
 		if (!this.browseOutsideVault && !makeLocation(this.app, absPath).inVault) {
 			this.noticeBrowseOutsideVaultDisabled();
 			return;
@@ -1195,7 +1245,9 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		// Try resolving as TExternalFile via vault API
-		const externalFile = this.app.vault.getFileByPath(`file:${absPath}`) ?? this.app.vault.getFileByPath(absPath);
+		const externalFile = vaultPath === undefined
+			? this.app.vault.getFileByPath(`file:${absPath}`) ?? this.app.vault.getFileByPath(absPath)
+			: null;
 		if (externalFile instanceof TFile) {
 			if (destination) {
 				this.openInDestination(externalFile, destination);
@@ -1213,7 +1265,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const app = this.app as AppWithExternalActions;
 		if (app.openWithDefaultApp) {
 			try {
-				void Promise.resolve(app.openWithDefaultApp.call(this.app, absPath)).catch((error: unknown) => {
+				void Promise.resolve(app.openWithDefaultApp.call(this.app, vaultPath ?? absPath)).catch((error: unknown) => {
 					const reason = error instanceof Error ? error.message : String(error);
 					new Notice(`Could not open item with the system default app: ${reason}`);
 				});
@@ -1421,7 +1473,10 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 			const folder = getFolderFromLocation(this.app, targetLoc);
 			const target = entry.isParent ? folder?.parent : entry.file;
-			if (!target) return;
+			if (!target) {
+				new Notice('The sidebar cannot show hidden items.');
+				return;
+			}
 
 			const modalWin = ownerWindow(this.containerEl ?? this.modalEl ?? this.contentEl ?? this.inputEl);
 			const fileExplorerLeaves = this.app.workspace.getLeavesOfType('file-explorer');
@@ -1448,8 +1503,14 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (targetLoc.inVault) {
 			const folder = getFolderFromLocation(this.app, targetLoc);
 			const target = entry.isParent ? folder?.parent : entry.file;
-			if (!target) return;
-			targetPath = target.path;
+			const hiddenPath = entry.isParent ? undefined : entry.vaultPath;
+			if (target) {
+				targetPath = target.path;
+			} else if (hiddenPath) {
+				targetPath = hiddenPath;
+			} else {
+				return;
+			}
 		} else {
 			if (entry.isParent) {
 				targetPath = getParentPath(targetLoc.absPath);
@@ -1552,10 +1613,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			} else if (iconName === 'home') {
 				const home = this.resolveHome();
 				if (home) {
-					this.navigateToLocation(makeLocation(this.app, home, {
-						browseOutsideVault: this.browseOutsideVault,
-						allowCreateOutsideVault: this.allowCreateOutsideVault,
-					}));
+					this.navigateToLocation(makeLocation(this.app, home, this.locationOptions));
 				} else {
 					this.navigateToLocation(makeLocation(this.app, rootSegment.path));
 				}
@@ -1608,10 +1666,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			segmentEl.setText(seg.name);
 			segmentEl.addEventListener('click', (e) => {
 				e.stopPropagation();
-				this.navigateToLocation(makeLocation(this.app, seg.path, {
-					browseOutsideVault: this.browseOutsideVault,
-					allowCreateOutsideVault: this.allowCreateOutsideVault,
-				}));
+				this.navigateToLocation(makeLocation(this.app, seg.path, this.locationOptions));
 			});
 			this.pathSegments.push(segmentEl);
 		}
@@ -1677,6 +1732,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				this.showPropertyMatches,
 				this.browseOutsideVault,
 				this.allowCreateOutsideVault,
+				this.showHiddenFiles,
 			).open();
 		}, 0);
 	}
@@ -1799,10 +1855,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 	private getVaultRootLocation(): PaletteLocation {
 		const root = this.app.vault.getRoot();
-		return locationFromFolder(this.app, root, {
-			browseOutsideVault: this.browseOutsideVault,
-			allowCreateOutsideVault: this.allowCreateOutsideVault,
-		});
+		return locationFromFolder(this.app, root, this.locationOptions);
 	}
 
 	private filterItems(
@@ -1838,14 +1891,11 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 					basename: item.basename,
 					extension: item.extension,
 					absPath: item.absPath,
+					vaultPath: item.vaultPath,
 				};
 			});
 
-			entries.sort((left, right) => {
-				const leftPath = left.file?.path ?? left.absPath ?? '';
-				const rightPath = right.file?.path ?? right.absPath ?? '';
-				return pathCollator.compare(leftPath, rightPath);
-			});
+			entries.sort((left, right) => pathCollator.compare(entrySortKey(left), entrySortKey(right)));
 
 			return hasParent ? [this.parentEntry, ...entries] : entries;
 		}
@@ -1962,6 +2012,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 					basename: item.basename,
 					extension: item.extension,
 					absPath: item.absPath,
+					vaultPath: item.vaultPath,
 				},
 				sortedWordMatches,
 			}];
@@ -1974,9 +2025,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 					return -diff;
 				}
 			}
-			const leftPath = left.entry.file?.path ?? left.entry.absPath ?? '';
-			const rightPath = right.entry.file?.path ?? right.entry.absPath ?? '';
-			return pathCollator.compare(leftPath, rightPath);
+			return pathCollator.compare(entrySortKey(left.entry), entrySortKey(right.entry));
 		});
 
 		const matched = entries.map(({ entry }) => entry);
@@ -1987,10 +2036,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private getQueryLocation(query: string): { location: PaletteLocation; name: string } | null {
-		const locationOptions = {
-			browseOutsideVault: this.browseOutsideVault,
-			allowCreateOutsideVault: this.allowCreateOutsideVault,
-		};
+		const locationOptions = this.locationOptions;
 
 		let baseLocation: PaletteLocation;
 		let remainingQuery: string;
@@ -2057,7 +2103,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (!this.browseOutsideVault && !location.inVault) return null;
 		if (location.inVault) {
 			const folder = getFolderFromLocation(this.app, location);
-			if (!folder) return null;
+			if (!folder && !this.isUnindexedVaultFolder(location)) return null;
 		} else if (Platform.isDesktopApp) {
 			const fsModule = getFs();
 			if (fsModule) {
@@ -2071,6 +2117,17 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			}
 		}
 		return { location, name };
+	}
+
+	private isUnindexedVaultFolder(location: PaletteLocation): boolean {
+		if (!this.showHiddenFiles) return false;
+		const fsModule = getFs();
+		if (!fsModule || !vaultBase(this.app)) return false;
+		try {
+			return fsModule.statSync(location.absPath).isDirectory();
+		} catch {
+			return false;
+		}
 	}
 
 	private isExternalEntry(entry: VaultEntry): boolean {
@@ -2169,6 +2226,7 @@ export default class FilePalettePlugin extends Plugin {
 			this.settings.showPropertyMatches,
 			this.settings.browseOutsideVault,
 			this.settings.allowCreateOutsideVault,
+			this.settings.showHiddenFiles,
 		).open();
 	}
 
@@ -2203,12 +2261,18 @@ export default class FilePalettePlugin extends Plugin {
 			typeof settings.allowCreateOutsideVault === 'boolean'
 				? settings.allowCreateOutsideVault
 				: DEFAULT_SETTINGS.allowCreateOutsideVault;
+		const showHiddenFiles =
+			'showHiddenFiles' in settings &&
+			typeof settings.showHiddenFiles === 'boolean'
+				? settings.showHiddenFiles
+				: DEFAULT_SETTINGS.showHiddenFiles;
 		this.settings = {
 			showCommandTitle,
 			searchProperties,
 			showPropertyMatches,
 			browseOutsideVault,
 			allowCreateOutsideVault,
+			showHiddenFiles,
 		};
 	}
 
@@ -2272,6 +2336,15 @@ class FilePaletteSettingTab extends PluginSettingTab {
 					type: 'toggle',
 					key: 'showCommandTitle',
 					defaultValue: DEFAULT_SETTINGS.showCommandTitle,
+				},
+			},
+			{
+				name: 'Show hidden files',
+				desc: 'Also list files and folders that Obsidian does not index, such as the configuration folder, so you can navigate into them. Hidden files open with the system default app.',
+				control: {
+					type: 'toggle',
+					key: 'showHiddenFiles',
+					defaultValue: DEFAULT_SETTINGS.showHiddenFiles,
 				},
 			},
 			{
@@ -2358,6 +2431,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 		if (key === 'showPropertyMatches') return this.plugin.settings.showPropertyMatches;
 		if (key === 'browseOutsideVault') return this.plugin.settings.browseOutsideVault;
 		if (key === 'allowCreateOutsideVault') return this.plugin.settings.allowCreateOutsideVault;
+		if (key === 'showHiddenFiles') return this.plugin.settings.showHiddenFiles;
 		return undefined;
 	}
 
@@ -2366,7 +2440,8 @@ class FilePaletteSettingTab extends PluginSettingTab {
 			(key !== 'showCommandTitle' &&
 				key !== 'showPropertyMatches' &&
 				key !== 'browseOutsideVault' &&
-				key !== 'allowCreateOutsideVault') ||
+				key !== 'allowCreateOutsideVault' &&
+				key !== 'showHiddenFiles') ||
 			typeof value !== 'boolean'
 		)
 			return;

@@ -524,31 +524,35 @@ describe('file palette picker', () => {
 	it('organizes settings into unheaded general, Search, and Outside the vault groups with safe defaults', () => {
 		const settingTab = plugin.settingTabs[0];
 		const defs = settingTab.getSettingDefinitions();
-		expect(defs).toHaveLength(3);
+		expect(defs).toHaveLength(4);
 
 		// Top: no heading (general)
 		expect(defs[0]).toMatchObject({
 			name: 'Show command title',
 			control: { key: 'showCommandTitle', defaultValue: true },
 		});
+		expect(defs[1]).toMatchObject({
+			name: 'Show hidden files',
+			control: { key: 'showHiddenFiles', defaultValue: false },
+		});
 
 		// Group: Search
-		expect(defs[1]).toMatchObject({
+		expect(defs[2]).toMatchObject({
 			type: 'group',
 			heading: 'Search',
 		});
-		const searchGroup = defs[1] as any;
+		const searchGroup = defs[2] as any;
 		expect(searchGroup.items?.map((item: any) => item.name)).toEqual([
 			'Search properties',
 			'Show matching properties',
 		]);
 
 		// Group: Outside the vault
-		expect(defs[2]).toMatchObject({
+		expect(defs[3]).toMatchObject({
 			type: 'group',
 			heading: 'Outside the vault',
 		});
-		const outsideGroup = defs[2] as any;
+		const outsideGroup = defs[3] as any;
 		expect(outsideGroup.items?.map((item: any) => item.name)).toEqual([
 			'Browse outside vault',
 			'Allow creating files outside vault',
@@ -583,6 +587,7 @@ describe('file palette picker', () => {
 			showPropertyMatches: false,
 			browseOutsideVault: false,
 			allowCreateOutsideVault: false,
+			showHiddenFiles: false,
 		});
 
 		const reloadedPlugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
@@ -2764,6 +2769,73 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 		expect(getParentPath('C:')).toBe('C:');
 		const driveRootLoc = makeLocation(app, 'C:/');
 		expect(driveRootLoc.parent()).toBeNull();
+	});
+
+	describe('hidden files', () => {
+		let vaultDir: string;
+		let list: ReturnType<typeof vi.fn>;
+
+		beforeEach(() => {
+			vaultDir = norm(mkdtempSync(join(tmpdir(), 'palette-hidden-')));
+			mkdirSync(join(vaultDir, '.obsidian'));
+			const notes = new TFolder('Notes', 'Notes');
+			root.children = [notes];
+			list = vi.fn(async (path: string) =>
+				path === '.obsidian'
+					? { folders: ['.obsidian/plugins'], files: ['.obsidian/app.json'] }
+					: { folders: ['.obsidian', 'Notes'], files: ['.gitignore'] },
+			);
+			(app.vault as unknown as { adapter: unknown }).adapter = Object.assign(new FileSystemAdapter(vaultDir), { list });
+		});
+
+		afterEach(() => {
+			rmSync(vaultDir, { recursive: true, force: true });
+		});
+
+		it('lists only indexed items unless showHiddenFiles is on', async () => {
+			expect((await makeLocation(app, vaultDir).list()).map((item) => item.name)).toEqual(['Notes']);
+			expect(list).not.toHaveBeenCalled();
+
+			const items = await makeLocation(app, vaultDir, { showHiddenFiles: true }).list();
+			expect(items.map((item) => item.name).sort()).toEqual(['.gitignore', '.obsidian', 'Notes']);
+			expect(items.find((item) => item.name === '.obsidian')).toMatchObject({ isFolder: true, vaultPath: '.obsidian' });
+			expect(items.find((item) => item.name === '.gitignore')).toMatchObject({ isFolder: false, basename: '.gitignore' });
+		});
+
+		it('navigates into and back out of a hidden folder', async () => {
+			const options = { showHiddenFiles: true };
+			const hidden = makeLocation(app, `${vaultDir}/.obsidian`, options);
+			expect((await hidden.list()).map((item) => item.vaultPath).sort()).toEqual(['.obsidian/app.json', '.obsidian/plugins']);
+			expect(hidden.parent()?.absPath).toBe(vaultDir);
+
+			const modal = new VaultPathSuggestModal(app, vaultDir, true, ['title'], false, false, false, true);
+			const entries = await modal.getSuggestions('.obsidian/');
+			expect(entries.filter((entry) => !entry.isParent).map((entry) => entry.name).sort()).toEqual(['app.json', 'plugins']);
+
+			const found = await modal.getSuggestions('.ob');
+			expect(found.map((entry) => entry.name)).toContain('.obsidian');
+		});
+
+		it('opens a hidden CSS file with the system app even when Obsidian resolves it as an external file', async () => {
+			list.mockResolvedValue({ folders: [], files: ['.obsidian/snippet.css'] });
+			const path = `${vaultDir}/.obsidian/snippet.css`;
+			const externalFile = new TExternalFile('snippet.css', `file:${path}`, path);
+			const getFileByPath = vi.fn(() => externalFile);
+			const openFile = vi.fn().mockResolvedValue(undefined);
+			const openWithDefaultApp = vi.fn();
+			app.vault.getFileByPath = getFileByPath as never;
+			app.workspace.getLeaf = vi.fn(() => ({ openFile })) as never;
+			(app as App & { openWithDefaultApp: typeof openWithDefaultApp }).openWithDefaultApp = openWithDefaultApp;
+
+			const modal = new VaultPathSuggestModal(app, `${vaultDir}/.obsidian`, true, ['title'], false, false, false, true);
+			const entry = (await modal.getSuggestions('snippet')).find((item) => item.name === 'snippet.css');
+			expect(entry).toBeDefined();
+			if (!entry) throw new Error('Expected hidden CSS file');
+			modal.onChooseSuggestion(entry);
+
+			expect(openWithDefaultApp).toHaveBeenCalledWith('.obsidian/snippet.css');
+			expect(openFile).not.toHaveBeenCalled();
+		});
 	});
 });
 

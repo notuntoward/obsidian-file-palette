@@ -22,7 +22,7 @@ A fast file and folder picker for jumping to files and browsing folders.
 | Up / Down | Highlight a suggestion |
 | Page Up / Page Down | Move the highlight up or down by one page of suggestions (geometry-corrected for variable-height rows) |
 | Home / End | Move the highlight to the first or last suggestion (Obsidian's picker default) |
-| Enter | Open in current tab or browse into a folder |
+| Enter | Open in current tab, open an unindexed vault file in the system default app, or browse into a folder |
 | Shift+Enter | Create a new file in the current folder using the search query |
 | Ctrl+Shift+Enter; Cmd+Shift+Enter | Open in a new tab |
 | Ctrl+Alt+Enter; Cmd+Option+Enter | Open in a new tab group |
@@ -40,6 +40,12 @@ A fast file and folder picker for jumping to files and browsing folders.
 
 Path prefixes take effect as you type, so the path above the search box previews where the query points. Typing `~` or `^` by itself completes it to `~/` or `^/`, and any slashes typed immediately after are ignored. The palette only moves to that folder when you press Enter with no partial name, pick a folder, or choose a path segment. Deleting a prefix leaves you where you are.
 
+## Hidden Vault Items
+
+Enable **Show hidden files** to include vault files and folders that Obsidian does not index. This includes dot-prefixed files and folders, such as `.obsidian`, and their contents, even when a nested name does not start with a dot. Browse and search them like other palette items; this setting is independent of **Browse outside vault**.
+
+Enter opens an unindexed file with the system default app, not in an Obsidian tab. Unindexed items cannot be linked or revealed in Obsidian's sidebar; `?` and `*` provide system file actions instead. For other files, a failed Obsidian open does not automatically fall back to the default app: use `*` to open the selected item there.
+
 
 ## External Files & Folders
 
@@ -54,7 +60,7 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 
 | Key | Inside Vault | Outside Vault |
 | --- | --- | --- |
-| Enter on file | Opens file in active leaf | Opens file using Obsidian's external file mechanism (falls back to default app) |
+| Enter on file | Opens indexed files in active leaf; unindexed files use the system default app | Opens via Obsidian's external file mechanism if resolved; otherwise uses the default app |
 | Shift+Enter (create) | Creates note in vault | Disabled by default (shows notice; toggleable in settings) |
 | Ctrl+Shift+L (link) | Copies link in vault-configured format (files only) | Copies absolute file:/// Markdown link matching Obsidian Ctrl+drag (files and folders) |
 | F2 (rename) | Renames the file or folder | Renames it on disk; requires Browse outside vault and Allow creating files outside vault |
@@ -70,6 +76,7 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 ## Settings
 
 - **Show command title**: Toggle showing the "File palette" heading above the current folder path in the picker modal (defaults to enabled). When disabled, the folder path remains visible.
+- **Show hidden files**: Include unindexed vault files and folders, including dot-prefixed items and their contents (defaults to disabled). See [Hidden Vault Items](#hidden-vault-items).
 
 ### Search
 
