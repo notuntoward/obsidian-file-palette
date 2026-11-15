@@ -33,10 +33,31 @@ export class Plugin {
 		this.data = data;
 	}
 	registerEvent(_event: any): void {}
+	registerView(_type: string, _creator: (leaf: any) => any): void {}
 	registerDomEvent(_el: any, _type: string, _callback: any): void {}
 	registerInterval(_id: number): number {
 		return _id;
 	}
+}
+
+export class ItemView {
+	app: any;
+	contentEl: HTMLElement;
+
+	constructor(leaf: any) {
+		this.app = leaf.app;
+		installDomHelpers();
+		this.contentEl = document.createElement('div');
+	}
+
+	async setState(_state: unknown, _result: unknown): Promise<void> {}
+}
+
+export async function loadPrism(): Promise<{
+	languages: Record<string, unknown>;
+	highlightElement: (element: Element) => void;
+}> {
+	return { languages: { css: {} }, highlightElement: () => {} };
 }
 
 export class PluginSettingTab {
@@ -402,17 +423,19 @@ function installDomHelpers(): void {
 
 	Object.defineProperties(HTMLElement.prototype, {
 		createDiv: {
-			value(this: HTMLElement, options?: { cls?: string }): HTMLDivElement {
+			value(this: HTMLElement, options?: { cls?: string; text?: string }): HTMLDivElement {
 				const element = document.createElement('div');
 				if (options?.cls) element.className = options.cls;
+				if (options?.text) element.textContent = options.text;
 				this.appendChild(element);
 				return element;
 			},
 		},
 		createSpan: {
-			value(this: HTMLElement, options?: { cls?: string }): HTMLSpanElement {
+			value(this: HTMLElement, options?: { cls?: string; text?: string }): HTMLSpanElement {
 				const element = document.createElement('span');
 				if (options?.cls) element.className = options.cls;
+				if (options?.text) element.textContent = options.text;
 				this.appendChild(element);
 				return element;
 			},

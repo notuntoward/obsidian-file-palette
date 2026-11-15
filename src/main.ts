@@ -41,10 +41,12 @@ import {
 import { applyFilePageColor } from 'commons/color';
 import { collectVaultMetadata, navigatePropertyRows, propertyNamePickerOptions, ValuePicker } from 'commons/properties';
 import { attachSuggestionPaging, renderKeyHints, type KeyHint } from 'commons/modal';
+import { openPaletteFile, READONLY_VIEW_TYPE, ReadonlyFileView } from './readonly-view';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
 interface FilePaletteSettings {
+	startInActiveDirectory: boolean;
 	showCommandTitle: boolean;
 	searchProperties: string[];
 	showPropertyMatches: boolean;
@@ -54,6 +56,7 @@ interface FilePaletteSettings {
 }
 
 const DEFAULT_SETTINGS: FilePaletteSettings = {
+	startInActiveDirectory: true,
 	showCommandTitle: true,
 	searchProperties: ['title'],
 	showPropertyMatches: false,
@@ -682,14 +685,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				? 'window'
 				: event.shiftKey ? 'tab' : 'split';
 			event.preventDefault();
-			if (entry.file instanceof TFile) {
-				this.openInDestination(entry.file, destination);
-				return;
-			}
-			if (entry.absPath) {
-				this.openExternalFile(entry.absPath, destination, entry.vaultPath);
-				return;
-			}
+			void this.openEntry(entry, destination);
+			return;
 		}
 
 		if (event.key === 'Enter' && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -934,14 +931,34 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
-		if (entry.file instanceof TFile) {
-			void this.app.workspace.getLeaf(false).openFile(entry.file);
-			this.close();
+		void this.openEntry(entry);
+	}
+
+	private async openEntry(entry: VaultEntry, destination?: 'tab' | 'split' | 'window'): Promise<void> {
+		const location = this.getCurrentTargetLocation();
+		if (!this.browseOutsideVault && (!location.inVault || this.isExternalEntry(entry))) {
+			this.noticeBrowseOutsideVaultDisabled();
 			return;
 		}
-
-		if (entry.absPath) {
-			this.openExternalFile(entry.absPath, undefined, entry.vaultPath);
+		if (destination === 'window' && Platform.isMobile) {
+			new Notice('Opening a file in a new window is not available on mobile.');
+			return;
+		}
+		const file = entry.file instanceof TFile ? entry.file : null;
+		const name = entry.name ?? file?.name;
+		const absPath = entry.absPath ?? (name ? makeItemAbsPath(location, name) : '');
+		if (!name || !absPath) {
+			new Notice('Could not determine file path.');
+			return;
+		}
+		const vaultPath = entry.vaultPath ?? (location.inVault && file && !(file instanceof TExternalFile) ? file.path : undefined);
+		try {
+			const opening = openPaletteFile(this.app, { name, absPath, vaultPath, file, destination });
+			this.close();
+			await opening;
+		} catch (error) {
+			const reason = error instanceof Error ? error.message : String(error);
+			new Notice(`Could not open file: ${reason}`);
 		}
 	}
 
@@ -1648,18 +1665,30 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.ellipsisSeparatorEl.classList.add('fp-path-hidden');
 
 		// 4. Subfolders
+		let segmentContainer: HTMLElement = this.pathEl;
 		for (let index = 1; index < segments.length; index++) {
 			const seg = segments[index];
 			const isLast = index === segments.length - 1;
+			const startsHiddenRegion = loc.inVault && segmentContainer === this.pathEl &&
+				!this.app.vault.getAbstractFileByPath(seg.path.replace(/^\/+/, ''));
 
 			// Separator
 			let sepEl: HTMLSpanElement | null = null;
 			if (index > 1 || (!loc.inVault && rootSegment.name !== '/')) {
-				sepEl = this.createPathSeparator('/');
+				sepEl = this.createPathSeparator('/', segmentContainer);
 			}
 			this.pathSegmentSeparators.push(sepEl);
 
-			const segmentEl = this.pathEl.createSpan({
+			if (startsHiddenRegion) {
+				segmentContainer = this.pathEl.createSpan({ cls: 'fp-path-unindexed' });
+				const marker = segmentContainer.createSpan({
+					cls: 'fp-path-unindexed-icon',
+					attr: { 'aria-label': 'Unindexed folder and descendants', title: 'Unindexed folder and descendants' },
+				});
+				setIcon(marker, 'folder');
+			}
+
+			const segmentEl = segmentContainer.createSpan({
 				cls: isLast ? 'fp-path-segment fp-path-current' : 'fp-path-segment fp-path-parent',
 				attr: { role: 'button', tabindex: '-1' },
 			});
@@ -1675,8 +1704,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		this.renderFooter(loc);
 	}
 
-	private createPathSeparator(char = '/'): HTMLSpanElement {
-		const separator = this.pathEl?.createSpan({ cls: 'fp-path-separator' });
+	private createPathSeparator(char = '/', container: HTMLElement | null = this.pathEl): HTMLSpanElement {
+		const separator = container?.createSpan({ cls: 'fp-path-separator' });
 		separator?.setText(char);
 		separator?.setAttribute('aria-hidden', 'true');
 		if (!separator) throw new Error('Could not create a folder path separator');
@@ -2182,6 +2211,7 @@ export default class FilePalettePlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.registerView(READONLY_VIEW_TYPE, (leaf) => new ReadonlyFileView(leaf));
 		this.addSettingTab(new FilePaletteSettingTab(this.app, this));
 		this.addCommand({
 			id: 'open-palette',
@@ -2266,7 +2296,12 @@ export default class FilePalettePlugin extends Plugin {
 			typeof settings.showHiddenFiles === 'boolean'
 				? settings.showHiddenFiles
 				: DEFAULT_SETTINGS.showHiddenFiles;
+		const startInActiveDirectory =
+			'startInActiveDirectory' in settings && typeof settings.startInActiveDirectory === 'boolean'
+				? settings.startInActiveDirectory
+				: DEFAULT_SETTINGS.startInActiveDirectory;
 		this.settings = {
+			startInActiveDirectory,
 			showCommandTitle,
 			searchProperties,
 			showPropertyMatches,
@@ -2282,6 +2317,19 @@ export default class FilePalettePlugin extends Plugin {
 		const vaultRootLocation = base
 			? makeLocation(this.app, base, this.settings)
 			: locationFromFolder(this.app, vaultRoot, this.settings);
+
+		if (!this.settings.startInActiveDirectory) return vaultRootLocation;
+		const readonlyView = this.app.workspace.getActiveViewOfType?.(ReadonlyFileView);
+		if (readonlyView) {
+			const state = readonlyView.getState();
+			if (typeof state.path === 'string') {
+				const directory = getParentPath(state.inVault === true ? `/${state.path}` : state.path);
+				const location = state.inVault === true
+					? makeLocation(this.app, base ? `${base}${directory}` : directory, this.settings)
+					: makeLocation(this.app, directory, this.settings);
+				return location.inVault || this.settings.browseOutsideVault ? location : vaultRootLocation;
+			}
+		}
 
 		if (!this.settings.browseOutsideVault) {
 			const activeFile = this.app.workspace.getActiveFile();
@@ -2330,22 +2378,43 @@ class FilePaletteSettingTab extends PluginSettingTab {
 	getSettingDefinitions(): SettingDefinitionItem[] {
 		return [
 			{
-				name: 'Show command title',
-				desc: 'Show “File palette” above the current folder path in the file picker.',
-				control: {
-					type: 'toggle',
-					key: 'showCommandTitle',
-					defaultValue: DEFAULT_SETTINGS.showCommandTitle,
-				},
+				type: 'group',
+				heading: 'Opening and browsing',
+				items: [
+					{
+						name: 'Start in active tab directory',
+						desc: 'Open in the active file tab’s directory. When off, always start at the vault root.',
+						control: {
+							type: 'toggle',
+							key: 'startInActiveDirectory',
+							defaultValue: DEFAULT_SETTINGS.startInActiveDirectory,
+						},
+					},
+					{
+						name: 'Show hidden files',
+						desc: 'Include unindexed files and folders, such as the configuration folder and its contents.',
+						control: {
+							type: 'toggle',
+							key: 'showHiddenFiles',
+							defaultValue: DEFAULT_SETTINGS.showHiddenFiles,
+						},
+					},
+				],
 			},
 			{
-				name: 'Show hidden files',
-				desc: 'Also list files and folders that Obsidian does not index, such as the configuration folder, so you can navigate into them. Hidden files open with the system default app.',
-				control: {
-					type: 'toggle',
-					key: 'showHiddenFiles',
-					defaultValue: DEFAULT_SETTINGS.showHiddenFiles,
-				},
+				type: 'group',
+				heading: 'Appearance',
+				items: [
+					{
+						name: 'Show command title',
+						desc: 'Show “File palette” above the current folder path in the file picker.',
+						control: {
+							type: 'toggle',
+							key: 'showCommandTitle',
+							defaultValue: DEFAULT_SETTINGS.showCommandTitle,
+						},
+					},
+				],
 			},
 			{
 				type: 'group',
@@ -2427,6 +2496,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 	}
 
 	getControlValue(key: string): unknown {
+		if (key === 'startInActiveDirectory') return this.plugin.settings.startInActiveDirectory;
 		if (key === 'showCommandTitle') return this.plugin.settings.showCommandTitle;
 		if (key === 'showPropertyMatches') return this.plugin.settings.showPropertyMatches;
 		if (key === 'browseOutsideVault') return this.plugin.settings.browseOutsideVault;
@@ -2441,7 +2511,8 @@ class FilePaletteSettingTab extends PluginSettingTab {
 				key !== 'showPropertyMatches' &&
 				key !== 'browseOutsideVault' &&
 				key !== 'allowCreateOutsideVault' &&
-				key !== 'showHiddenFiles') ||
+				key !== 'showHiddenFiles' &&
+				key !== 'startInActiveDirectory') ||
 			typeof value !== 'boolean'
 		)
 			return;

@@ -36,6 +36,7 @@ import {
 	TFolder,
 } from './__mocks__/obsidian';
 import type { App } from 'obsidian';
+import { READONLY_VIEW_TYPE, ReadonlyFileView, openPaletteFile } from '../src/readonly-view';
 
 function addFolder(parent: TFolder, name: string): TFolder {
 	const path = parent.path ? `${parent.path}/${name}` : name;
@@ -163,6 +164,7 @@ describe('file palette picker', () => {
 		});
 
 		app = {
+			viewRegistry: { getTypeByExtension: (extension: string) => extension === 'md' ? 'markdown' : undefined },
 			vault: {
 				getRoot: () => root,
 				getMarkdownFiles: () => [...metadataByFile.keys()],
@@ -521,19 +523,23 @@ describe('file palette picker', () => {
 		return { chooser, elements, sync };
 	}
 
-	it('organizes settings into unheaded general, Search, and Outside the vault groups with safe defaults', () => {
+	it('organizes settings into opening, appearance, search, and outside-vault groups', () => {
 		const settingTab = plugin.settingTabs[0];
 		const defs = settingTab.getSettingDefinitions();
 		expect(defs).toHaveLength(4);
 
-		// Top: no heading (general)
 		expect(defs[0]).toMatchObject({
-			name: 'Show command title',
-			control: { key: 'showCommandTitle', defaultValue: true },
+			type: 'group',
+			heading: 'Opening and browsing',
+			items: [
+				{ name: 'Start in active tab directory', control: { key: 'startInActiveDirectory', defaultValue: true } },
+				{ name: 'Show hidden files', control: { key: 'showHiddenFiles', defaultValue: false } },
+			],
 		});
 		expect(defs[1]).toMatchObject({
-			name: 'Show hidden files',
-			control: { key: 'showHiddenFiles', defaultValue: false },
+			type: 'group',
+			heading: 'Appearance',
+			items: [{ name: 'Show command title', control: { key: 'showCommandTitle', defaultValue: true } }],
 		});
 
 		// Group: Search
@@ -573,6 +579,31 @@ describe('file palette picker', () => {
 		expect(isDisabled).toBe(true);
 	});
 
+	it('defaults to the active directory and persists opting into starting at the vault root', async () => {
+		runCommand('open-palette');
+		expect(VaultPathSuggestModal.getActiveModal()?.currentLocation.vaultRelPath).toBe('/current');
+		await plugin.settingTabs[0].setControlValue('startInActiveDirectory', false);
+		runCommand('open-palette');
+		expect(VaultPathSuggestModal.getActiveModal()?.currentLocation.vaultRelPath).toBe('/');
+
+		const reloaded = new FilePalettePlugin(app, {} as never) as typeof plugin;
+		reloaded.data = plugin.data;
+		await reloaded.onload();
+		expect(reloaded.settings.startInActiveDirectory).toBe(false);
+		reloaded.openPalette();
+		expect(VaultPathSuggestModal.getActiveModal()?.currentLocation.vaultRelPath).toBe('/');
+	});
+
+	it('starts in a read-only tab’s directory when following the active tab', () => {
+		const view = new ReadonlyFileView({ app } as never);
+		vi.spyOn(view, 'getState').mockReturnValue({ path: 'current/.hidden/theme.css', inVault: true });
+		const getActiveViewOfType = vi.fn().mockReturnValue(view);
+		Object.assign(app.workspace, { getActiveViewOfType });
+		runCommand('open-palette');
+		expect(VaultPathSuggestModal.getActiveModal()?.currentLocation.vaultRelPath)
+			.toBe('/current/.hidden');
+	});
+
 	it('allows the command title to be hidden from plugin settings without hiding the path', async () => {
 		const settingTab = plugin.settingTabs[0];
 		const definition = findSettingDefinition('Show command title');
@@ -582,6 +613,7 @@ describe('file palette picker', () => {
 		await settingTab.setControlValue('showCommandTitle', false);
 		expect(plugin.settings.showCommandTitle).toBe(false);
 		expect(plugin.data).toEqual({
+			startInActiveDirectory: true,
 			showCommandTitle: false,
 			searchProperties: ['title'],
 			showPropertyMatches: false,
@@ -890,6 +922,25 @@ describe('file palette picker', () => {
 		expect(modal.inputEl.value).toBe('^/');
 		expect(modal.currentLocation.absPath).toBe(locationBeforeTyping);
 		expect((modal.getSuggestions('^') as any).some((entry: any) => entry.file === rootFile)).toBe(true);
+	});
+
+	it('marks the first unindexed folder and descendants without changing the vault icon', () => {
+		const modal = new VaultPathSuggestModal(app, '/current/.hidden/themes');
+		modal.open();
+		const path = modal.modalEl.querySelector('.fp-path');
+		const ribbon = path?.querySelector('.fp-path-unindexed');
+		expect(path?.querySelector('.fp-external-indicator')?.getAttribute('data-icon')).toBe('vault');
+		expect(ribbon?.querySelector('.fp-path-unindexed-icon')?.getAttribute('data-icon')).toBe('folder');
+		expect(Array.from(ribbon?.querySelectorAll('.fp-path-segment') ?? [], (el) => el.textContent))
+			.toEqual(['.hidden', 'themes']);
+		expect(path?.querySelector('.fp-path-parent')?.textContent).toBe('current');
+		expect(path?.querySelector('.fp-path-parent')?.closest('.fp-path-unindexed')).toBeNull();
+
+		modal.close();
+		const normal = new VaultPathSuggestModal(app, currentFolder as never);
+		normal.open();
+		expect(normal.modalEl.querySelector('.fp-path-unindexed')).toBeNull();
+		expect(normal.modalEl.querySelector('.fp-external-indicator')?.getAttribute('data-icon')).toBe('vault');
 	});
 
 	it('keeps path segments in order and truncates ancestors before the current folder', () => {
@@ -1998,6 +2049,7 @@ describe('external file and folder palette behavior', () => {
 
 		root = new TFolder('', '');
 		app = {
+			viewRegistry: { getTypeByExtension: (extension: string) => extension === 'md' ? 'markdown' : undefined },
 			vault: {
 				adapter: new FileSystemAdapter('C:/ObsidianVault'),
 				getRoot: () => root,
@@ -2453,6 +2505,7 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 
 		root = new TFolder('', '');
 		app = {
+			viewRegistry: { getTypeByExtension: (extension: string) => extension === 'md' ? 'markdown' : undefined },
 			vault: {
 				adapter: new FileSystemAdapter('C:/TestVault'),
 				getRoot: () => root,
@@ -2816,16 +2869,15 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 			expect(found.map((entry) => entry.name)).toContain('.obsidian');
 		});
 
-		it('opens a hidden CSS file with the system app even when Obsidian resolves it as an external file', async () => {
+		it('opens hidden CSS in a read-only view even when Obsidian resolves it as an external file', async () => {
 			list.mockResolvedValue({ folders: [], files: ['.obsidian/snippet.css'] });
 			const path = `${vaultDir}/.obsidian/snippet.css`;
 			const externalFile = new TExternalFile('snippet.css', `file:${path}`, path);
 			const getFileByPath = vi.fn(() => externalFile);
 			const openFile = vi.fn().mockResolvedValue(undefined);
-			const openWithDefaultApp = vi.fn();
+			const setViewState = vi.fn().mockResolvedValue(undefined);
 			app.vault.getFileByPath = getFileByPath as never;
-			app.workspace.getLeaf = vi.fn(() => ({ openFile })) as never;
-			(app as App & { openWithDefaultApp: typeof openWithDefaultApp }).openWithDefaultApp = openWithDefaultApp;
+			app.workspace.getLeaf = vi.fn(() => ({ openFile, setViewState })) as never;
 
 			const modal = new VaultPathSuggestModal(app, `${vaultDir}/.obsidian`, true, ['title'], false, false, false, true);
 			const entry = (await modal.getSuggestions('snippet')).find((item) => item.name === 'snippet.css');
@@ -2833,9 +2885,91 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 			if (!entry) throw new Error('Expected hidden CSS file');
 			modal.onChooseSuggestion(entry);
 
-			expect(openWithDefaultApp).toHaveBeenCalledWith('.obsidian/snippet.css');
+			expect(setViewState).toHaveBeenCalledWith({
+				type: READONLY_VIEW_TYPE,
+				state: { path: '.obsidian/snippet.css', inVault: true },
+				active: true,
+			});
 			expect(openFile).not.toHaveBeenCalled();
 		});
+	});
+});
+
+describe('read-only file view', () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it('uses Obsidian’s current registered handler for an unindexed file', async () => {
+		const externalFile = new TExternalFile('note.md', 'file:/vault/.hidden/note.md', '/vault/.hidden/note.md');
+		const openFile = vi.fn().mockResolvedValue(undefined);
+		const setViewState = vi.fn();
+		const app = {
+			viewRegistry: { getTypeByExtension: vi.fn().mockReturnValue('markdown') },
+			vault: { getFileByPath: vi.fn().mockReturnValue(externalFile) },
+			workspace: { getLeaf: vi.fn().mockReturnValue({ openFile, setViewState }) },
+		} as unknown as App;
+
+		await openPaletteFile(app, {
+			name: 'note.md', absPath: '/vault/.hidden/note.md',
+			vaultPath: '.hidden/note.md', file: null,
+		});
+		expect(openFile).toHaveBeenCalledWith(externalFile);
+		expect(setViewState).not.toHaveBeenCalled();
+	});
+
+	it('consults the current file type registry each time a file opens', async () => {
+		const getTypeByExtension = vi.fn().mockReturnValueOnce(undefined).mockReturnValueOnce('new-view');
+		const file = new TExternalFile('sample.new', 'file:/vault/sample.new', '/vault/sample.new');
+		const openFile = vi.fn().mockResolvedValue(undefined);
+		const setViewState = vi.fn().mockResolvedValue(undefined);
+		const app = {
+			viewRegistry: { getTypeByExtension },
+			vault: { getFileByPath: vi.fn().mockReturnValue(file) },
+			workspace: { getLeaf: vi.fn().mockReturnValue({ openFile, setViewState }) },
+		} as unknown as App;
+		const options = { name: 'sample.new', absPath: '/vault/sample.new', vaultPath: 'sample.new', file: null };
+		await openPaletteFile(app, options);
+		await openPaletteFile(app, options);
+		expect(setViewState).toHaveBeenCalledTimes(1);
+		expect(openFile).toHaveBeenCalledWith(file);
+	});
+
+	it('renders file text with a read-only indicator and a dynamically available Prism language', async () => {
+		const highlight = vi.fn();
+		vi.spyOn(ObsidianMock, 'loadPrism').mockResolvedValue({
+			languages: { css: {} },
+			highlightElement: highlight,
+		});
+		const contents = new TextEncoder().encode('body { color: red; }');
+		const app = { vault: { adapter: { readBinary: vi.fn().mockResolvedValue(contents.buffer) } } };
+		const view = new ReadonlyFileView({ app } as never);
+		Notice.messages.length = 0;
+
+		await view.setState({ path: '.hidden/test.css', inVault: true }, {} as never);
+		const code = view.contentEl.querySelector('code');
+		expect(code?.textContent).toBe('body { color: red; }');
+		expect(code?.classList.contains('language-css')).toBe(true);
+		expect(highlight).toHaveBeenCalledWith(code);
+		expect(view.contentEl.querySelector('.fp-readonly-label')?.textContent).toContain('Read-only');
+		expect(Notice.messages).toContain('Opened read-only: Obsidian has no registered view for this file type.');
+	});
+
+	it('shows unmatched text without highlighting and reports binary input', async () => {
+		const highlight = vi.fn();
+		vi.spyOn(ObsidianMock, 'loadPrism').mockResolvedValue({
+			languages: { css: {} },
+			highlightElement: highlight,
+		});
+		const readBinary = vi.fn().mockResolvedValueOnce(new TextEncoder().encode('plain text').buffer)
+			.mockResolvedValueOnce(new Uint8Array([0, 1, 2]).buffer);
+		const view = new ReadonlyFileView({ app: { vault: { adapter: { readBinary } } } } as never);
+		Notice.messages.length = 0;
+
+		await view.setState({ path: '.hidden/example.py', inVault: true }, {} as never);
+		expect(view.contentEl.querySelector('code')?.textContent).toBe('plain text');
+		expect(highlight).not.toHaveBeenCalled();
+		await view.setState({ path: '.hidden/example.bin', inVault: true }, {} as never);
+		expect(view.contentEl.querySelector('.fp-readonly-error')?.textContent).toContain('not a supported text file');
+		expect(Notice.messages.at(-1)).toContain('not a supported text file');
 	});
 });
 

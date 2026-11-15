@@ -13,7 +13,8 @@ A fast file and folder picker for jumping to files and browsing folders.
 ## Command
 
 - `Open file palette`: opens the picker in the current note's folder
-  (or the vault root when no note is active).
+  (including read-only file tabs), or the vault root when no file is active.
+  Disable **Start in active tab directory** to always start at the vault root.
 
 ## Keys
 
@@ -22,7 +23,7 @@ A fast file and folder picker for jumping to files and browsing folders.
 | Up / Down | Highlight a suggestion |
 | Page Up / Page Down | Move the highlight up or down by one page of suggestions (geometry-corrected for variable-height rows) |
 | Home / End | Move the highlight to the first or last suggestion (Obsidian's picker default) |
-| Enter | Open in current tab, open an unindexed vault file in the system default app, or browse into a folder |
+| Enter | Open a file in the current tab, or browse into a folder |
 | Shift+Enter | Create a new file in the current folder using the search query |
 | Ctrl+Shift+Enter; Cmd+Shift+Enter | Open in a new tab |
 | Ctrl+Alt+Enter; Cmd+Option+Enter | Open in a new tab group |
@@ -44,7 +45,11 @@ Path prefixes take effect as you type, so the path above the search box previews
 
 Enable **Show hidden files** to include vault files and folders that Obsidian does not index. This includes dot-prefixed files and folders, such as `.obsidian`, and their contents, even when a nested name does not start with a dot. Browse and search them like other palette items; this setting is independent of **Browse outside vault**.
 
-Enter opens an unindexed file with the system default app, not in an Obsidian tab. Unindexed items cannot be linked or revealed in Obsidian's sidebar; `?` and `*` provide system file actions instead. For other files, a failed Obsidian open does not automatically fall back to the default app: use `*` to open the selected item there.
+The path keeps its usual vault icon. A dotted-folder marker and chevron-edged tinted ribbon begin at the first unindexed folder and extend through its descendants to the right edge.
+
+Files with a registered Obsidian view open normally, including unindexed files when Obsidian can resolve them. Other text files open in a read-only view with a lock indicator and a notice explaining why. The viewer uses Obsidian's current Prism language names for highlighting; an unmatched extension is displayed as plain text. UTF-8 and BOM-marked UTF-16 text are supported; binary files and other encodings are reported as unsupported.
+
+Unindexed items cannot be linked or revealed in Obsidian's sidebar; `?` and `*` provide system file actions instead. A failed Obsidian open does not automatically fall back to the default app: use `*` to open the selected item there.
 
 
 ## External Files & Folders
@@ -60,7 +65,7 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 
 | Key | Inside Vault | Outside Vault |
 | --- | --- | --- |
-| Enter on file | Opens indexed files in active leaf; unindexed files use the system default app | Opens via Obsidian's external file mechanism if resolved; otherwise uses the default app |
+| Enter on file | Opens in the registered Obsidian view, or read-only for other text files | Opens in the registered Obsidian view, or read-only for other text files |
 | Shift+Enter (create) | Creates note in vault | Disabled by default (shows notice; toggleable in settings) |
 | Ctrl+Shift+L (link) | Copies link in vault-configured format (files only) | Copies absolute file:/// Markdown link matching Obsidian Ctrl+drag (files and folders) |
 | F2 (rename) | Renames the file or folder | Renames it on disk; requires Browse outside vault and Allow creating files outside vault |
@@ -75,8 +80,14 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 
 ## Settings
 
-- **Show command title**: Toggle showing the "File palette" heading above the current folder path in the picker modal (defaults to enabled). When disabled, the folder path remains visible.
+### Opening and browsing
+
+- **Start in active tab directory**: Start in the active file tab's directory, including read-only file tabs (defaults to enabled). When disabled, always start at the vault root. Outside-vault directories still require **Browse outside vault**.
 - **Show hidden files**: Include unindexed vault files and folders, including dot-prefixed items and their contents (defaults to disabled). See [Hidden Vault Items](#hidden-vault-items).
+
+### Appearance
+
+- **Show command title**: Toggle showing the "File palette" heading above the current folder path in the picker modal (defaults to enabled). When disabled, the folder path remains visible.
 
 ### Search
 
