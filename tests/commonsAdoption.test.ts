@@ -21,6 +21,7 @@ import {
 	TFolder,
 } from './__mocks__/obsidian';
 import type { App } from 'obsidian';
+import { openPaletteFile } from '../src/readonly-view';
 
 describe('commons adoption in obsidian-file-palette', () => {
 	beforeEach(() => {
@@ -34,6 +35,18 @@ describe('commons adoption in obsidian-file-palette', () => {
 
 	afterEach(() => {
 		VaultPathSuggestModal.closeActiveModal();
+	});
+
+	it('delegates file type lookup to commons and stops when the registry is unavailable', async () => {
+		const lookup = vi.spyOn(workspaceCommons, 'getRegisteredViewType').mockReturnValue(null);
+		const getLeaf = vi.fn();
+		const app = { workspace: { getLeaf } } as unknown as App;
+
+		await expect(openPaletteFile(app, {
+			name: 'test.css', absPath: '/vault/test.css', vaultPath: 'test.css', file: null,
+		})).rejects.toThrow('file type registry is unavailable');
+		expect(lookup).toHaveBeenCalledWith(app, 'css');
+		expect(getLeaf).not.toHaveBeenCalled();
 	});
 
 	describe('search and matching engine delegation', () => {

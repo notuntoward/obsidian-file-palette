@@ -1,5 +1,6 @@
 import { ItemView, loadPrism, Notice, setIcon, TFile } from 'obsidian';
 import type { App, ViewStateResult, WorkspaceLeaf } from 'obsidian';
+import { getRegisteredViewType } from 'commons/workspace';
 
 export const READONLY_VIEW_TYPE = 'file-palette-readonly';
 
@@ -17,16 +18,6 @@ function isFileSource(value: unknown): value is FileSource {
 	return typeof value === 'object' && value !== null &&
 		'path' in value && typeof value.path === 'string' && value.path.length > 0 &&
 		'inVault' in value && typeof value.inVault === 'boolean';
-}
-
-export function getRegisteredViewType(app: App, extension: string): string | undefined {
-	const registry = (app as App & {
-		viewRegistry?: { getTypeByExtension?: (extension: string) => string | undefined };
-	}).viewRegistry;
-	if (typeof registry?.getTypeByExtension !== 'function') {
-		throw new Error('Obsidian’s file type registry is unavailable.');
-	}
-	return registry.getTypeByExtension(extension.toLowerCase());
 }
 
 export async function readTextSource(app: App, source: FileSource): Promise<string> {
@@ -131,6 +122,9 @@ export async function openPaletteFile(
 	const extensionIndex = options.name.lastIndexOf('.');
 	const extension = extensionIndex > 0 ? options.name.slice(extensionIndex + 1) : '';
 	const registered = getRegisteredViewType(app, extension);
+	if (registered === null) {
+		throw new Error('Obsidian’s file type registry is unavailable.');
+	}
 	const leaf: WorkspaceLeaf = app.workspace.getLeaf(options.destination ?? false);
 	if (registered) {
 		const file = options.file ?? app.vault.getFileByPath(`file:${options.absPath}`) ??
