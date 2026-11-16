@@ -41,6 +41,10 @@ A fast file and folder picker for jumping to files and browsing folders.
 
 Path prefixes take effect as you type, so the path above the search box previews where the query points. Typing `~` or `^` by itself completes it to `~/` or `^/`, and any slashes typed immediately after are ignored. The palette only moves to that folder when you press Enter with no partial name, pick a folder, or choose a path segment. Deleting a prefix leaves you where you are.
 
+## Tips
+
+- To open a folder's contents in your system file explorer, highlight the folder and press `*` (App). This opens it with the system's default folder app. In contrast, `?` shows the folder selected in its parent.
+
 ## Hidden Vault Items
 
 Enable **Show hidden files** to include vault files and folders that Obsidian does not index. This includes dot-prefixed files and folders, such as `.obsidian`, and their contents, even when a nested name does not start with a dot. Browse and search them like other palette items; this setting is independent of **Browse outside vault**.
