@@ -1,0 +1,21 @@
+name: Attribution policy
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: attribution-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    uses: notuntoward/kilo-dotfiles/.github/workflows/no-ai-attribution.yml@668c0feea0a5d67cc9dd362776289b0755301f63
+    with:
+      policy-ref: 668c0feea0a5d67cc9dd362776289b0755301f63
