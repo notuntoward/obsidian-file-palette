@@ -1,4 +1,4 @@
-import { ItemView, loadPrism, Notice, setIcon, TFile } from 'obsidian';
+import { ItemView, loadPrism, Notice, Platform, setIcon, TFile } from 'obsidian';
 import type { App, ViewStateResult, WorkspaceLeaf } from 'obsidian';
 import { getRegisteredViewType } from 'commons/workspace';
 
@@ -25,7 +25,10 @@ export async function readTextSource(app: App, source: FileSource): Promise<stri
 	if (source.inVault) {
 		bytes = new Uint8Array(await app.vault.adapter.readBinary(source.path));
 	} else {
-		const fs: typeof import('fs') = require('fs');
+		if (Platform.isMobile || !Platform.isDesktopApp) {
+			throw new Error('External files can only be read on desktop.');
+		}
+		const fs = await import('fs');
 		bytes = await fs.promises.readFile(source.path);
 	}
 
@@ -84,7 +87,7 @@ export class ReadonlyFileView extends ItemView {
 			const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '';
 			if (extension && /^[a-z0-9-]+$/.test(extension)) {
 				try {
-					const prism: PrismApi = await loadPrism();
+					const prism = await loadPrism() as PrismApi;
 					if (generation !== this.generation) return;
 					if (typeof prism.languages[extension] === 'object' && prism.languages[extension] !== null) {
 						code.classList.add(`language-${extension}`);

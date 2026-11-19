@@ -36,7 +36,7 @@ import {
 	TFolder,
 } from './__mocks__/obsidian';
 import type { App } from 'obsidian';
-import { READONLY_VIEW_TYPE, ReadonlyFileView, openPaletteFile } from '../src/readonly-view';
+import { READONLY_VIEW_TYPE, ReadonlyFileView, openPaletteFile, readTextSource } from '../src/readonly-view';
 
 function addFolder(parent: TFolder, name: string): TFolder {
 	const path = parent.path ? `${parent.path}/${name}` : name;
@@ -2898,6 +2898,20 @@ describe('home directory resolution, shortcuts, and Location model', () => {
 describe('read-only file view', () => {
 	afterEach(() => vi.restoreAllMocks());
 
+	it('reads external text only on desktop', async () => {
+		const path = join(tmpdir(), 'file-palette-read-only.txt');
+		writeFileSync(path, 'outside vault');
+		try {
+			await expect(readTextSource({} as App, { path, inVault: false })).resolves.toBe('outside vault');
+			ObsidianMock.Platform.isDesktopApp = false;
+			await expect(readTextSource({} as App, { path, inVault: false }))
+				.rejects.toThrow('External files can only be read on desktop.');
+		} finally {
+			ObsidianMock.Platform.isDesktopApp = true;
+			rmSync(path, { force: true });
+		}
+	});
+
 	it('uses Obsidian’s current registered handler for an unindexed file', async () => {
 		const externalFile = new TExternalFile('note.md', 'file:/vault/.hidden/note.md', '/vault/.hidden/note.md');
 		const openFile = vi.fn().mockResolvedValue(undefined);
@@ -3003,6 +3017,11 @@ describe('generateExternalMarkdownLink formatting', () => {
 
 	it('handles UNC paths', () => {
 		expect(generateExternalMarkdownLink('//server/share/docs/report.pdf')).toBe('[report.pdf](file://server/share/docs/report.pdf)');
+	});
+
+	it('encodes unsafe path characters without a control-character regex', () => {
+		expect(generateExternalMarkdownLink('C:/Notes/a\0b\u0008c\u000bd\u000ce\u000ef\u001fg.md'))
+			.toBe('[a\0b\u0008c\u000bd\u000ce\u000ef\u001fg](file:///C:/Notes/a%00b%08c%0Bd%0Ce%0Ef%1Fg.md)');
 	});
 });
 

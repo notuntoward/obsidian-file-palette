@@ -22,7 +22,6 @@ literal via the repository verifier or a line-length-safe Node check, not grep
 for minified names. Reuse unchanged evidence for docs/publication-only follow-ups.
 Never search for a vault, change its link or build/copy from another checkout.
 
-
 ## Shared library: commons
 
 Use commons for workspace/window/tab/focus, per-window timers/clipboard, modal,
@@ -34,6 +33,35 @@ does not require opening the library or rebuilding its consumers.
 Local adoption uses file:../obsidian-commons; obey the library's existing
 commons-adoption branch and explicit-ref/tag-disabled publication rules.
 
+<!-- BEGIN SUITE IMPACT -->
+## Suite impact
+
+Before and after source or contract changes, run
+`node ../obsidian-commons/scripts/inventory.mjs impact`. Read only the listed required contract peers and
+same-surface symmetry candidates; do not scan every sibling repository. Run
+their configured checks only when the report or changed contract requires them.
+
+Run `node ../obsidian-commons/scripts/inventory.mjs release-check` before source release. The report
+distinguishes a valid bundled runtime artifact from reproducible source
+dependencies. If the project declares a shared-package link, pin an immutable
+tag/commit before release and pass the check again.
+
+Run `node ../obsidian-commons/scripts/inventory.mjs community-review <project|all>` for the Obsidian
+community-rule lint gate. This command runs only each selected repository's
+local `npm run lint:community-review`; a consumer check/build must never start a
+suite traversal. Standalone browser userscripts are outside the Obsidian
+runtime profile and remain under the repository's normal lint rules.
+<!-- END SUITE IMPACT -->
+Before and after source or contract changes, run
+`node ../obsidian-commons/scripts/inventory.mjs impact`. Read only the listed
+required contract peers and same-surface symmetry candidates; do not scan every
+sibling repository. Run their configured checks only when the report or changed
+contract requires them.
+
+`file:../obsidian-commons` is valid local build input because esbuild bundles
+imported commons source into `main.js`. Before source release, pin an immutable
+commons tag/commit and pass
+`node ../obsidian-commons/scripts/inventory.mjs release-check`.
 
 ## Tooling
 

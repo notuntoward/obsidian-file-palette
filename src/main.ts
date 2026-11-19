@@ -10,7 +10,6 @@ import {
 	prepareFuzzySearch,
 	renderMatches,
 	setIcon,
-	Setting,
 	SuggestModal,
 	TAbstractFile,
 	TExternalFile,
@@ -113,7 +112,7 @@ export function vaultBase(app: App): string | null {
 function getOs(): typeof import('os') | null {
 	if (!Platform.isDesktopApp) return null;
 	try {
-		return require('os');
+		return require('os') as typeof import('os');
 	} catch {
 		return null;
 	}
@@ -122,7 +121,7 @@ function getOs(): typeof import('os') | null {
 function getFs(): typeof import('fs') | null {
 	if (!Platform.isDesktopApp) return null;
 	try {
-		return require('fs');
+		return require('fs') as typeof import('fs');
 	} catch {
 		return null;
 	}
@@ -131,7 +130,7 @@ function getFs(): typeof import('fs') | null {
 function getPath(): typeof import('path') | null {
 	if (!Platform.isDesktopApp) return null;
 	try {
-		return require('path');
+		return require('path') as typeof import('path');
 	} catch {
 		return null;
 	}
@@ -276,7 +275,18 @@ export function generateExternalMarkdownLink(targetPath: string, isFolder = fals
 		title = extension === 'md' ? filename.slice(0, dotIndex) : filename;
 	}
 
-	const encodedPath = trimmed.replace(/[\\\x00\x08\x0B\x0C\x0E-\x1F ]/g, (char) => encodeURIComponent(char));
+	const encodedPath = Array.from(trimmed, (char) => {
+		const code = char.charCodeAt(0);
+		const isUnsafe =
+			char === '\\' ||
+			char === ' ' ||
+			code === 0 ||
+			code === 8 ||
+			code === 11 ||
+			code === 12 ||
+			(code >= 14 && code <= 31);
+		return isUnsafe ? encodeURIComponent(char) : char;
+	}).join('');
 	const uri = encodedPath.startsWith('//')
 		? `file:${encodedPath}`
 		: encodedPath.startsWith('/')
@@ -767,7 +777,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		private readonly showHiddenFiles = DEFAULT_SETTINGS.showHiddenFiles,
 	) {
 		super(app);
-		attachSuggestionPaging(this as unknown as SuggestModal<unknown>);
+		attachSuggestionPaging(this);
 		const locationOptions = this.locationOptions;
 		if (typeof locationOrFolder === 'string') {
 			this.currentLocation = makeLocation(app, locationOrFolder, locationOptions);
@@ -976,7 +986,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	onOpen(): void {
-		super.onOpen();
+		void super.onOpen();
 		this.modalEl.addClass('file-palette-modal');
 		this.setTitle(this.showCommandTitle ? FILE_PALETTE_TITLE : '');
 		const inputContainer = this.inputEl.parentElement;
@@ -1084,9 +1094,6 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				key.setAttribute('title', key.textContent.replace('↵', Platform.isMacOS ? 'Return' : 'Enter'));
 			}
 		});
-		footer.querySelectorAll<HTMLElement>('.fp-hint.is-disabled').forEach((hint) => {
-			hint.style.opacity = '0.4';
-		});
 
 		this.updateFooterHints(loc);
 	}
@@ -1118,7 +1125,6 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			if (!action || !disabledByAction.has(action)) return;
 			const disabled = disabledByAction.get(action) ?? false;
 			hint.classList.toggle('is-disabled', disabled);
-			hint.style.opacity = disabled ? '0.4' : '';
 		});
 	}
 
@@ -1959,7 +1965,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 						const fuzzyResult = search(field.text);
 						fieldScore = fuzzyResult ? fuzzyResult.score : 0;
 						fieldRanges = fuzzyResult?.matches?.length
-							? alignFuzzyRanges(field.text, fuzzyResult.matches as [number, number][], queryWord)
+							? alignFuzzyRanges(field.text, fuzzyResult.matches, queryWord)
 							: findLiteralRanges(field.text, queryWord);
 						fieldMatch = {
 							quality: literalQuality,
@@ -1972,7 +1978,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 							fieldScore = fuzzyResult.score;
 							fieldRanges = alignFuzzyRanges(
 								field.text,
-								(fuzzyResult.matches as [number, number][] | undefined) ?? [],
+								fuzzyResult.matches ?? [],
 								queryWord,
 							);
 							fieldMatch = {
@@ -2215,8 +2221,7 @@ export default class FilePalettePlugin extends Plugin {
 		this.addSettingTab(new FilePaletteSettingTab(this.app, this));
 		this.addCommand({
 			id: 'open-palette',
-			// eslint-disable-next-line obsidianmd/commands/no-plugin-name-in-command-name -- Keep the explicit label requested for discoverability.
-			name: 'Open file palette',
+			name: 'Open palette',
 			callback: () => {
 				this.openPalette();
 			},
@@ -2520,7 +2525,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 		this.plugin.settings[key] = value;
 		try {
 			await this.plugin.saveSettings();
-			(this as any).refreshDomState?.();
+			this.refreshDomState();
 		} catch (error) {
 			this.plugin.settings[key] = previousValue;
 			const reason = error instanceof Error ? error.message : String(error);

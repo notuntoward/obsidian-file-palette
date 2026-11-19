@@ -73,6 +73,7 @@ export class PluginSettingTab {
 	}
 
 	display(): void {}
+	refreshDomState(): void {}
 	hide(): void {}
 }
 
@@ -349,7 +350,7 @@ export class TFile extends TAbstractFile {
 	basename: string;
 	extension: string;
 
-	constructor(name: string, path: string) {
+	constructor(name = '', path = name) {
 		super(name, path);
 		const extensionIndex = name.lastIndexOf('.');
 		this.basename = extensionIndex < 0 ? name : name.slice(0, extensionIndex);
