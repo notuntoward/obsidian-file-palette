@@ -51,6 +51,12 @@ community-rule lint gate. This command runs only each selected repository's
 local `npm run lint:community-review`; a consumer check/build must never start a
 suite traversal. Standalone browser userscripts are outside the Obsidian
 runtime profile and remain under the repository's normal lint rules.
+
+For manual repository maintenance, run `node ../obsidian-commons/scripts/inventory.mjs bot-prs
+<project...>` and `node ../obsidian-commons/scripts/inventory.mjs maintain <project...>`. They default to
+dry-run; add `--apply` only to approve/update eligible bot PRs and synchronized
+rule dependencies. `maintain` implicitly adds commons for any Obsidian review
+target; positional `all` selects the entire inventory.
 <!-- END SUITE IMPACT -->
 Before and after source or contract changes, run
 `node ../obsidian-commons/scripts/inventory.mjs impact`. Read only the listed
