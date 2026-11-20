@@ -40,7 +40,10 @@ import {
 import { applyFilePageColor } from 'commons/color';
 import { collectVaultMetadata, navigatePropertyRows, propertyNamePickerOptions, ValuePicker } from 'commons/properties';
 import { attachSuggestionPaging, renderKeyHints, type KeyHint } from 'commons/modal';
+import { generateExternalMarkdownLink, getExternalFilePath } from 'commons/links';
 import { openPaletteFile, READONLY_VIEW_TYPE, ReadonlyFileView } from './readonly-view';
+
+export { generateExternalMarkdownLink } from 'commons/links';
 
 const FILE_PALETTE_TITLE = 'File palette';
 
@@ -50,6 +53,7 @@ interface FilePaletteSettings {
 	searchProperties: string[];
 	showPropertyMatches: boolean;
 	browseOutsideVault: boolean;
+	allowExternalFileLinks: boolean;
 	allowCreateOutsideVault: boolean;
 	showHiddenFiles: boolean;
 }
@@ -60,6 +64,7 @@ const DEFAULT_SETTINGS: FilePaletteSettings = {
 	searchProperties: ['title'],
 	showPropertyMatches: false,
 	browseOutsideVault: false,
+	allowExternalFileLinks: false,
 	allowCreateOutsideVault: false,
 	showHiddenFiles: false,
 };
@@ -241,59 +246,6 @@ function splitItemName(name: string): { basename: string; extension: string } {
 		basename: extIndex > 0 ? name.slice(0, extIndex) : name,
 		extension: extIndex > 0 ? name.slice(extIndex + 1) : '',
 	};
-}
-
-const EXTERNAL_LINK_IMAGE_EXTENSIONS = new Set(['bmp', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif']);
-
-export function generateExternalMarkdownLink(targetPath: string, isFolder = false): string {
-	const normalized = targetPath.replace(/\\/g, '/');
-	let trimmed = normalized;
-	if (trimmed !== '/' && !/^[a-zA-Z]:\/$/.test(trimmed)) {
-		trimmed = trimmed.replace(/\/+$/, '');
-	}
-
-	let filename = '';
-	if (/^[a-zA-Z]:\/$/.test(trimmed)) {
-		filename = trimmed.slice(0, 2);
-	} else if (trimmed === '/') {
-		filename = '/';
-	} else {
-		const lastSlash = trimmed.lastIndexOf('/');
-		filename = lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
-	}
-
-	let title = '';
-	let extension = '';
-
-	if (isFolder || trimmed === '/' || /^[a-zA-Z]:\/$/.test(trimmed)) {
-		title = filename;
-	} else {
-		const dotIndex = filename.lastIndexOf('.');
-		if (dotIndex > 0 && dotIndex < filename.length - 1) {
-			extension = filename.slice(dotIndex + 1).toLowerCase();
-		}
-		title = extension === 'md' ? filename.slice(0, dotIndex) : filename;
-	}
-
-	const encodedPath = Array.from(trimmed, (char) => {
-		const code = char.charCodeAt(0);
-		const isUnsafe =
-			char === '\\' ||
-			char === ' ' ||
-			code === 0 ||
-			code === 8 ||
-			code === 11 ||
-			code === 12 ||
-			(code >= 14 && code <= 31);
-		return isUnsafe ? encodeURIComponent(char) : char;
-	}).join('');
-	const uri = encodedPath.startsWith('//')
-		? `file:${encodedPath}`
-		: encodedPath.startsWith('/')
-			? `file://${encodedPath}`
-			: `file:///${encodedPath}`;
-	const link = `[${title}](${uri})`;
-	return !isFolder && EXTERNAL_LINK_IMAGE_EXTENSIONS.has(extension) ? `!${link}` : link;
 }
 
 export class PaletteLocationImpl implements PaletteLocation {
@@ -775,6 +727,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		private readonly browseOutsideVault = DEFAULT_SETTINGS.browseOutsideVault,
 		private readonly allowCreateOutsideVault = DEFAULT_SETTINGS.allowCreateOutsideVault,
 		private readonly showHiddenFiles = DEFAULT_SETTINGS.showHiddenFiles,
+		private readonly allowExternalFileLinks = DEFAULT_SETTINGS.allowExternalFileLinks,
 	) {
 		super(app);
 		attachSuggestionPaging(this);
@@ -1185,7 +1138,17 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			return;
 		}
 
-		if (targetLoc.inVault && (entry.isFolder || entry.file instanceof TFolder)) {
+		const externalPath = this.isExternalEntry(entry)
+			? getExternalFilePath(entry.file) ?? entry.absPath ?? null
+			: null;
+		if (externalPath && !this.allowExternalFileLinks) {
+			new Notice(
+				'External file links are disabled. Enable “Allow links to files outside the vault” in File Palette settings.',
+			);
+			return;
+		}
+
+		if (!externalPath && targetLoc.inVault && (entry.isFolder || entry.file instanceof TFolder)) {
 			new Notice('Select a file to copy its link.');
 			return;
 		}
@@ -1193,6 +1156,18 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const win = ownerWindow(this.containerEl ?? this.modalEl ?? this.contentEl ?? this.inputEl) ?? window;
 
 		try {
+			if (externalPath) {
+				const isFolder = Boolean(entry.isFolder || entry.file instanceof TFolder);
+				const link = generateExternalMarkdownLink(externalPath, isFolder);
+				const success = await writeClipboardIn(win, link);
+				new Notice(
+					success
+						? 'Link copied to clipboard.'
+						: 'Copying links is not available on this device.',
+				);
+				return;
+			}
+
 			if (targetLoc.inVault) {
 				if (entry.file instanceof TFile) {
 					const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
@@ -1768,6 +1743,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 				this.browseOutsideVault,
 				this.allowCreateOutsideVault,
 				this.showHiddenFiles,
+				this.allowExternalFileLinks,
 			).open();
 		}, 0);
 	}
@@ -2262,6 +2238,7 @@ export default class FilePalettePlugin extends Plugin {
 			this.settings.browseOutsideVault,
 			this.settings.allowCreateOutsideVault,
 			this.settings.showHiddenFiles,
+			this.settings.allowExternalFileLinks,
 		).open();
 	}
 
@@ -2296,6 +2273,11 @@ export default class FilePalettePlugin extends Plugin {
 			typeof settings.allowCreateOutsideVault === 'boolean'
 				? settings.allowCreateOutsideVault
 				: DEFAULT_SETTINGS.allowCreateOutsideVault;
+		const allowExternalFileLinks =
+			'allowExternalFileLinks' in settings &&
+			typeof settings.allowExternalFileLinks === 'boolean'
+				? settings.allowExternalFileLinks
+				: DEFAULT_SETTINGS.allowExternalFileLinks;
 		const showHiddenFiles =
 			'showHiddenFiles' in settings &&
 			typeof settings.showHiddenFiles === 'boolean'
@@ -2311,6 +2293,7 @@ export default class FilePalettePlugin extends Plugin {
 			searchProperties,
 			showPropertyMatches,
 			browseOutsideVault,
+			allowExternalFileLinks,
 			allowCreateOutsideVault,
 			showHiddenFiles,
 		};
@@ -2486,6 +2469,15 @@ class FilePaletteSettingTab extends PluginSettingTab {
 						},
 					},
 					{
+						name: 'Allow links to files outside the vault',
+						desc: 'Allow Ctrl+Shift+L to create absolute file:// links for files outside the vault.',
+						control: {
+							type: 'toggle',
+							key: 'allowExternalFileLinks',
+							defaultValue: DEFAULT_SETTINGS.allowExternalFileLinks,
+						},
+					},
+					{
 						name: 'Allow creating files outside vault',
 						desc: 'Let Shift+Enter create files while browsing outside the vault.',
 						control: {
@@ -2505,6 +2497,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 		if (key === 'showCommandTitle') return this.plugin.settings.showCommandTitle;
 		if (key === 'showPropertyMatches') return this.plugin.settings.showPropertyMatches;
 		if (key === 'browseOutsideVault') return this.plugin.settings.browseOutsideVault;
+		if (key === 'allowExternalFileLinks') return this.plugin.settings.allowExternalFileLinks;
 		if (key === 'allowCreateOutsideVault') return this.plugin.settings.allowCreateOutsideVault;
 		if (key === 'showHiddenFiles') return this.plugin.settings.showHiddenFiles;
 		return undefined;
@@ -2515,6 +2508,7 @@ class FilePaletteSettingTab extends PluginSettingTab {
 			(key !== 'showCommandTitle' &&
 				key !== 'showPropertyMatches' &&
 				key !== 'browseOutsideVault' &&
+				key !== 'allowExternalFileLinks' &&
 				key !== 'allowCreateOutsideVault' &&
 				key !== 'showHiddenFiles' &&
 				key !== 'startInActiveDirectory') ||

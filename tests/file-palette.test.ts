@@ -561,15 +561,19 @@ describe('file palette picker', () => {
 		const outsideGroup = defs[3] as any;
 		expect(outsideGroup.items?.map((item: any) => item.name)).toEqual([
 			'Browse outside vault',
+			'Allow links to files outside the vault',
 			'Allow creating files outside vault',
 		]);
 
-		// Both outside vault defaults are off
+		// Outside-vault defaults are off.
 		const browseDef = outsideGroup.items[0];
-		const createDef = outsideGroup.items[1];
+		const externalLinkDef = outsideGroup.items[1];
+		const createDef = outsideGroup.items[2];
 		expect(browseDef.control.defaultValue).toBe(false);
+		expect(externalLinkDef.control.defaultValue).toBe(false);
 		expect(createDef.control.defaultValue).toBe(false);
 		expect(plugin.settings.browseOutsideVault).toBe(false);
+		expect(plugin.settings.allowExternalFileLinks).toBe(false);
 		expect(plugin.settings.allowCreateOutsideVault).toBe(false);
 
 		// Allow creating files outside vault is disabled when browseOutsideVault is false
@@ -618,6 +622,7 @@ describe('file palette picker', () => {
 			searchProperties: ['title'],
 			showPropertyMatches: false,
 			browseOutsideVault: false,
+			allowExternalFileLinks: false,
 			allowCreateOutsideVault: false,
 			showHiddenFiles: false,
 		});
@@ -2090,6 +2095,7 @@ describe('external file and folder palette behavior', () => {
 		plugin = new FilePalettePlugin(app, {} as never) as typeof plugin;
 		await plugin.onload();
 		plugin.settings.browseOutsideVault = true;
+		plugin.settings.allowExternalFileLinks = true;
 	});
 
 	afterEach(() => {
@@ -2326,6 +2332,74 @@ describe('external file and folder palette behavior', () => {
 		const expectedLink = generateExternalMarkdownLink(norm(join(tempDir, 'outside-doc.md')), false);
 		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(expectedLink));
 		await vi.waitFor(() => expect(Notice.messages).toContain('Link copied to clipboard.'));
+	});
+
+	it('copies an external TFile with a file URI even when the palette location is in the vault', async () => {
+		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
+		plugin.settings.startInActiveDirectory = false;
+
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+		const realPath = norm(join(tempDir, 'outside-doc.md'));
+		const file = new TExternalFile('outside-doc.md', realPath, realPath);
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		const entry = {
+			file,
+			isParent: false,
+			name: file.name,
+			isFolder: false,
+			absPath: realPath,
+		};
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+			key: 'L',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		}));
+
+		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith(
+			generateExternalMarkdownLink(realPath),
+		));
+		expect(app.fileManager.generateMarkdownLink).not.toHaveBeenCalled();
+	});
+
+	it('warns instead of copying an external link when external linking is disabled', async () => {
+		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
+		plugin.settings.allowExternalFileLinks = false;
+
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		const entry = suggestions.find((candidate) => candidate.name === 'outside-doc.md');
+		if (!entry) throw new Error('Expected outside-doc.md');
+		const element = document.createElement('div');
+		element.addClass('suggestion-item');
+		element.addClass('is-selected');
+		modal.renderSuggestion(entry, element);
+		modal.resultContainerEl.appendChild(element);
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+			key: 'L',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		}));
+
+		await vi.waitFor(() => expect(Notice.messages).toContain(
+			'External file links are disabled. Enable “Allow links to files outside the vault” in File Palette settings.',
+		));
+		expect(clipboardWrite).not.toHaveBeenCalled();
 	});
 
 	it('copies a folder link with Ctrl+Shift+L when outside the vault', async () => {
@@ -3022,6 +3096,11 @@ describe('generateExternalMarkdownLink formatting', () => {
 	it('encodes unsafe path characters without a control-character regex', () => {
 		expect(generateExternalMarkdownLink('C:/Notes/a\0b\u0008c\u000bd\u000ce\u000ef\u001fg.md'))
 			.toBe('[a\0b\u0008c\u000bd\u000ce\u000ef\u001fg](file:///C:/Notes/a%00b%08c%0Bd%0Ce%0Ef%1Fg.md)');
+	});
+
+	it('encodes URI-reserved and Markdown-delimiter characters in paths and titles', () => {
+		expect(generateExternalMarkdownLink('C:/Notes/Plan [final]#1?.md'))
+			.toBe('[Plan \\[final\\]#1?](file:///C:/Notes/Plan%20%5Bfinal%5D%231%3F.md)');
 	});
 });
 

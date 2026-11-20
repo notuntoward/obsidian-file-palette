@@ -5,7 +5,7 @@ A fast file and folder picker for jumping to files and browsing folders.
 > [!IMPORTANT]
 > **Notice (External File Access)**: On desktop, this plugin can access and browse files and folders outside your Obsidian vault when the **Browse outside vault** setting is enabled (disabled by default). This capability is available to support Obsidian 1.14.2+'s native external note editing—allowing you to navigate, search, open, and link notes located anywhere on your computer (such as in your home directory or external repositories) from the palette.
 >
-> If you wish to use File Palette with notes outside your vault, enable **Browse outside vault** in settings. Creating files outside the vault via Shift+Enter is also disabled by default and requires explicitly enabling **Allow creating files outside vault**.
+> If you wish to use File Palette with notes outside your vault, enable **Browse outside vault** in settings. Copying external `file://` links and creating files outside the vault via Shift+Enter are separate, disabled-by-default permissions; enable **Allow links to files outside the vault** and/or **Allow creating files outside vault** as needed.
 
 > [!NOTE]
 > **Release Note / Breaking Change**: In v0.2.0, `~` navigates to the user's OS home directory (desktop only) instead of the vault root. To jump directly to the vault root, use `^`. Inside the vault, a leading `/` also navigates to the vault root; outside the vault, `/` navigates to the OS root directory.
@@ -71,7 +71,7 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 | --- | --- | --- |
 | Enter on file | Opens in the registered Obsidian view, or read-only for other text files | Opens in the registered Obsidian view, or read-only for other text files |
 | Shift+Enter (create) | Creates note in vault | Disabled by default (shows notice; toggleable in settings) |
-| Ctrl+Shift+L (link) | Copies link in vault-configured format (files only) | Copies absolute file:/// Markdown link matching Obsidian Ctrl+drag (files and folders) |
+| Ctrl+Shift+L (link) | Copies link in vault-configured format (files only) | Copies an absolute `file:///` Markdown link (files and folders) only when external file links are enabled; otherwise shows a notice |
 | F2 (rename) | Renames the file or folder | Renames it on disk; requires Browse outside vault and Allow creating files outside vault |
 | `:` (sidebar) | Reveals item in file navigation sidebar | Disabled (the sidebar only displays vault files) |
 | `?` (explorer) | Shows in system file explorer | Shows in system file explorer |
@@ -106,4 +106,5 @@ button. These are property names, not tag-value pills.
 ### Outside the vault
 
 - **Browse outside vault**: Allow the palette to open in and navigate to folders outside the vault, open external files, copy external links, and use system file actions on external items. When off, the palette stays inside the vault and blocks those external actions (defaults to disabled).
+- **Allow links to files outside the vault**: Separately allow Ctrl+Shift+L to copy absolute `file://` Markdown links for external files and folders (defaults to disabled). Attempts while disabled show a settings reminder without writing to the clipboard.
 - **Allow creating files outside vault**: Separately allow Shift+Enter to create files while browsing outside the vault on desktop (defaults to disabled; disabled when browsing outside vault is off).
