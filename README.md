@@ -67,6 +67,8 @@ Obsidian 1.14.2+ on desktop allows opening notes stored outside the vault. File 
 
 ### Outside-the-Vault Capabilities
 
+When enabled, `File Palette` gives you another convenient way to use Obsidian's new outside the vault capabilities.  See the [Outside the Vault](#outside-the-vault) settings. 
+
 | Key | Inside Vault | Outside Vault |
 | --- | --- | --- |
 | Enter on file | Opens in the registered Obsidian view, or read-only for other text files | Opens in the registered Obsidian view, or read-only for other text files |
