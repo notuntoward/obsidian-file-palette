@@ -292,6 +292,22 @@ describe('file palette picker', () => {
 		]);
 	});
 
+	it('uses Obsidian prompt sizing for a viewport-relative scrollable suggestion list', () => {
+		const styles = readFileSync(resolve('styles.css'), 'utf8');
+
+		expect(styles).toMatch(
+			/\.file-palette-modal\s*\{[\s\S]*?--prompt-max-height: 70dvh/,
+		);
+		expect(styles).toMatch(
+			/\.file-palette-modal \.prompt-results,[\s\S]*?\.file-palette-modal \.suggestion-container/,
+		);
+		expect(styles).toMatch(
+			/\.file-palette-modal \.prompt-results,[\s\S]*?flex: 1 1 auto;[\s\S]*?min-height: 0;/,
+		);
+		const modalRule = styles.match(/\.file-palette-modal\s*\{([^}]*)\}/)?.[1] ?? '';
+		expect(modalRule).not.toMatch(/(?:^|\n)\s*height:/);
+	});
+
 	it('uses Apple modifier-key symbols in the macOS footer', () => {
 		Platform.isMacOS = true;
 		runCommand('open-palette');
@@ -1089,6 +1105,33 @@ describe('file palette picker', () => {
 		expect(modal.modalEl.querySelector('.fp-path')).not.toBeNull();
 	});
 
+	it('copies a chooser-selected link when the rendered row lacks is-selected', async () => {
+		const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal('navigator', { clipboard: { writeText: clipboardWrite } });
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the picker modal to open');
+		const entry = modal.getSuggestions('^/Root').find((suggestion) => suggestion.file === rootFile);
+		if (!entry) throw new Error('Expected Root note to be suggested');
+		modal.chooser = {
+			selectedItem: 0,
+			values: [entry],
+			setSelectedItem: vi.fn(),
+		};
+
+		modal.inputEl.dispatchEvent(new KeyboardEvent('keydown', {
+			key: 'L',
+			ctrlKey: true,
+			shiftKey: true,
+			bubbles: true,
+			cancelable: true,
+		}));
+
+		await vi.waitFor(() => expect(clipboardWrite).toHaveBeenCalledWith('[[Root note]]'));
+		expect(modal.resultContainerEl.querySelector('.suggestion-item.is-selected')).toBeNull();
+		expect(generateMarkdownLink).toHaveBeenCalledWith(rootFile, 'current/source.md');
+	});
+
 	it('does not consume L while the user is typing a search', () => {
 		const modal = highlightEntry(rootFile, '^/Root');
 		const event = new KeyboardEvent('keydown', { key: 'l', bubbles: true, cancelable: true });
@@ -1379,6 +1422,27 @@ describe('file palette picker', () => {
 
 		expect(event.defaultPrevented).toBe(true);
 		expect(modal.inputEl.value).toBe('^/Root note');
+	});
+
+	it('completes a chooser-selected file on Tab when the rendered row lacks is-selected', () => {
+		runCommand('open-palette');
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected the picker modal to open');
+		const entry = modal.getSuggestions('Nested').find((suggestion) => suggestion.file === nestedFolder);
+		if (!entry) throw new Error('Expected Nested to be suggested');
+		modal.chooser = {
+			selectedItem: 0,
+			values: [entry],
+			setSelectedItem: vi.fn(),
+		};
+		modal.inputEl.value = 'Nes';
+
+		const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+		modal.inputEl.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(modal.inputEl.value).toBe('Nested/');
+		expect(modal.resultContainerEl.querySelector('.suggestion-item.is-selected')).toBeNull();
 	});
 
 	it('completes the parent entry on Tab', () => {
@@ -2120,6 +2184,47 @@ describe('external file and folder palette behavior', () => {
 		expect(pathEl?.classList.contains('file-palette-outside')).toBe(true);
 		const expectedDisplay = tempDir.replace(/\\/g, '/');
 		expect(pathEl?.getAttribute('title')).toBe(expectedDisplay);
+	});
+
+	it('returns every external folder entry through the asynchronous picker path', async () => {
+		for (let index = 0; index < 20; index++) {
+			writeFileSync(join(tempDir, `External ${String(index).padStart(2, '0')}.md`), '');
+		}
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+		const files = suggestions.filter((entry) => !entry.isParent && !entry.isFolder);
+
+		expect(files).toHaveLength(22);
+		expect(modal.limit).toBe(0);
+	});
+
+	it('renders every external entry without asking vault color APIs about absolute paths', async () => {
+		for (let index = 0; index < 12; index++) {
+			writeFileSync(join(tempDir, `External ${String(index).padStart(2, '0')}.md`), '');
+		}
+		plugin.commands.find(({ id }) => id === 'open-palette')?.callback();
+		const modal = SuggestModal.instances.at(-1);
+		if (!modal) throw new Error('Expected modal to open');
+		const vaultLookup = vi.spyOn(app.vault, 'getAbstractFileByPath').mockImplementation((path: string) => {
+			if (path.includes(tempDir.replace(/\\/g, '/'))) {
+				throw new Error('Vault lookup cannot accept an external absolute path');
+			}
+			return null;
+		});
+		const suggestions = await Promise.resolve(modal.getSuggestions(''));
+
+		const rendered = suggestions.map((entry) => {
+			const element = document.createElement('div');
+			modal.renderSuggestion(entry, element);
+			return element;
+		});
+
+		expect(rendered).toHaveLength(suggestions.length);
+		expect(rendered.filter((element) => element.textContent)).toHaveLength(suggestions.length);
+		expect(vaultLookup).not.toHaveBeenCalled();
 	});
 
 	it('keeps navigation inside the vault when outside-vault browsing is disabled', async () => {

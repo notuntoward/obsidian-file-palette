@@ -1,3 +1,26 @@
+.file-palette-modal {
+	--prompt-max-height: 70vh;
+}
+
+@supports (height: 100dvh) {
+	.file-palette-modal {
+		--prompt-max-height: 70dvh;
+	}
+}
+
+.file-palette-modal > .fp-header,
+.file-palette-modal > .prompt-input-container,
+.file-palette-modal > .fp-footer {
+	flex: 0 0 auto;
+}
+
+.file-palette-modal .prompt-results,
+.file-palette-modal .suggestion-container {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+}
+
 .fp-readonly-label {
 	display: flex;
 	align-items: center;

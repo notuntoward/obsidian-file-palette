@@ -39,7 +39,7 @@ import {
 } from 'commons/windows';
 import { applyFilePageColor } from 'commons/color';
 import { collectVaultMetadata, navigatePropertyRows, propertyNamePickerOptions, ValuePicker } from 'commons/properties';
-import { attachSuggestionPaging, renderKeyHints, type KeyHint } from 'commons/modal';
+import { attachSuggestionPaging, getChooser, renderKeyHints, type KeyHint } from 'commons/modal';
 import { generateExternalMarkdownLink, getExternalFilePath } from 'commons/links';
 import { openPaletteFile, READONLY_VIEW_TYPE, ReadonlyFileView } from './readonly-view';
 
@@ -533,6 +533,14 @@ export interface VaultEntry {
 	vaultPath?: string;
 }
 
+function isVaultEntry(value: unknown): value is VaultEntry {
+	return typeof value === 'object'
+		&& value !== null
+		&& 'file' in value
+		&& 'isParent' in value
+		&& typeof value.isParent === 'boolean';
+}
+
 interface PropertyMatch {
 	property: string;
 	value: string;
@@ -640,8 +648,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		}
 
 		if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && (event.shiftKey || event.altKey)) {
-			const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-			const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+			const entry = this.getSelectedEntry();
 			if (!entry || entry.isParent || entry.isFolder || entry.file instanceof TFolder) return;
 			const destination = event.shiftKey && event.altKey
 				? 'window'
@@ -681,11 +688,8 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			if (rawQuery !== '') {
 				const target = this.getQueryLocation(this.inputEl.value);
 				if (target && target.name === '') {
-					const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-					const firstSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item');
-					const isFirst = !selectedSuggestion || selectedSuggestion === firstSuggestion;
-					const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
-					if (!entry || entry.isParent || isFirst) {
+					const entry = this.getSelectedEntry();
+					if (!entry || entry.isParent || this.isFirstSuggestionSelected()) {
 						event.preventDefault();
 						this.navigateToLocation(target.location);
 						return;
@@ -806,7 +810,6 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 			applyFilePageColor(this.app, nameEl, entry.file);
 			element.setAttribute('data-path', entry.file.path);
 		} else if (entry.absPath && !isFolder) {
-			applyFilePageColor(this.app, nameEl, entry.absPath);
 			element.setAttribute('data-path', entry.absPath);
 		}
 		if (entry.propertyValues?.length) {
@@ -840,11 +843,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		if (hasTraversedPath) {
 			const isMouseClickOnParent = evt instanceof MouseEvent && entry.isParent;
 			if (!isMouseClickOnParent) {
-				const selectedEl = this.resultContainerEl?.querySelector<HTMLElement>('.suggestion-item.is-selected');
-				const firstEl = this.resultContainerEl?.querySelector<HTMLElement>('.suggestion-item');
-				const isFirstSuggestion = !selectedEl || selectedEl === firstEl;
-
-				if (entry.isParent || isFirstSuggestion) {
+				if (entry.isParent || this.isFirstSuggestionSelected()) {
 					this.navigateToLocation(target.location);
 					return;
 				}
@@ -1055,8 +1054,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		const footer = this.modalEl.querySelector<HTMLElement>('.fp-footer');
 		if (!footer) return;
 
-		const selectedEl = this.resultContainerEl?.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedEl ? this.entryBySuggestion.get(selectedEl) : null;
+		const entry = this.getSelectedEntry();
 		const isFolder = !!entry && Boolean(entry.isFolder || entry.file instanceof TFolder);
 		const isFile = !!entry && !entry.isParent && !isFolder;
 
@@ -1081,9 +1079,32 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 		});
 	}
 
+	private getSelectedEntry(): VaultEntry | null {
+		const chooser = getChooser(this);
+		const selectedIndex = chooser?.selectedItem;
+		const selectedValue = typeof selectedIndex === 'number' && Number.isInteger(selectedIndex)
+			? chooser?.values?.[selectedIndex]
+			: undefined;
+		if (isVaultEntry(selectedValue)) return selectedValue;
+
+		const selectedEl = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		return selectedEl ? this.entryBySuggestion.get(selectedEl) ?? null : null;
+	}
+
+	private isFirstSuggestionSelected(): boolean {
+		const chooser = getChooser(this);
+		const selectedIndex = chooser?.selectedItem;
+		if (typeof selectedIndex === 'number' && Number.isInteger(selectedIndex) && chooser?.values?.length) {
+			return selectedIndex === 0;
+		}
+
+		const selectedEl = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
+		const firstEl = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item');
+		return !selectedEl || selectedEl === firstEl;
+	}
+
 	private completeSelectedSuggestion(): void {
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		const entry = this.getSelectedEntry();
 		if (!entry) return;
 
 		let completedName = '';
@@ -1125,8 +1146,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 
 	private async copySelectedLink(): Promise<void> { 
 		const targetLoc = this.getCurrentTargetLocation();
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		const entry = this.getSelectedEntry();
 
 		if (!this.browseOutsideVault && (!targetLoc.inVault || (entry && this.isExternalEntry(entry)))) {
 			this.noticeBrowseOutsideVaultDisabled();
@@ -1387,8 +1407,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private beginRenameSelected(): void {
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		const entry = this.getSelectedEntry();
 		if (!entry) return;
 
 		const reason = this.getRenameBlockReason(entry);
@@ -1454,8 +1473,7 @@ export class VaultPathSuggestModal extends SuggestModal<VaultEntry> {
 	}
 
 	private runSelectedOperator(operator: ':' | '?' | '*'): void {
-		const selectedSuggestion = this.resultContainerEl.querySelector<HTMLElement>('.suggestion-item.is-selected');
-		const entry = selectedSuggestion ? this.entryBySuggestion.get(selectedSuggestion) : null;
+		const entry = this.getSelectedEntry();
 		if (!entry) return;
 
 		const targetLoc = this.getQueryLocation(this.inputEl.value)?.location ?? this.currentLocation;
